@@ -7,94 +7,13 @@ https://wiki.theory.org/BitTorrentSpecification#Metainfo_File_Structure
 package main
 
 import (
-	"bytes"
-	"crypto/sha1"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 
-	bencode "github.com/jackpal/bencode-go"
+	"github.com/TatuMon/bittorrent-client/src/torrent"
 )
 
-type Sha1Checksum [20]byte
-
-type bencodeTorrentInfo struct {
-	Length      uint   `bencode:"length"` // Length of the final file in bytes
-	Name        string `bencode:"name"`
-	PieceLength uint   `bencode:"piece length"` // Number of bytes in each piece
-	Pieces      string `bencode:"pieces"`       // String consisting of the concatenation of all 20-byte SHA1 hash values, one per piece (byte string, i.e. not urlencoded)
-}
-
-type bencodeTorrent struct {
-	Announce     string             `bencode:"announce"`
-	Info         bencodeTorrentInfo `bencode:"info"`
-	Comment      string             `bencode:"comment"`
-	CreationDate int                `bencode:"creation date"`
-	CreatedBy    string             `bencode:"created by"`
-}
-
-type Torrent struct {
-	Announce     string
-	Comment      string
-	CreationDate int
-	CreatedBy    string
-	FileSize     uint
-	FileName     string
-	PieceSize    uint
-	PiecesHashes []Sha1Checksum
-	InfoHash     Sha1Checksum
-}
-
-func GenInfoHash(t bencodeTorrentInfo) (Sha1Checksum, error) {
-	buf := new(bytes.Buffer)
-	if err := bencode.Marshal(buf, t); err != nil {
-		return Sha1Checksum{}, fmt.Errorf("failed to marshal field 'info': %w", err)
-	}
-
-	checksum := sha1.Sum(buf.Bytes())
-	return checksum, nil
-}
-
-func TorrentFromBencode(t bencodeTorrent) (*Torrent, error) {
-	concatedHashes := []byte(t.Info.Pieces)
-	chunks := len(concatedHashes) / 20
-
-	pHashes := make([]Sha1Checksum, chunks)
-	for i := range chunks {
-		end := (i * 20) + 20
-		pHashes[i] = Sha1Checksum(concatedHashes[i:end])
-	}
-
-	infoHash, err := GenInfoHash(t.Info)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate sha1 checksum of field 'info': %w", err)
-	}
-
-
-	return &Torrent{
-		Announce:     t.Announce,
-		Comment:      t.Comment,
-		CreationDate: t.CreationDate,
-		CreatedBy:    t.CreatedBy,
-		FileSize:     t.Info.Length,
-		FileName:     t.Info.Name,
-		PieceSize:    t.Info.PieceLength,
-		PiecesHashes: pHashes,
-		InfoHash:     infoHash,
-	}, nil
-}
-
-func printTorrentJson(tData Torrent) {
-	tData.PiecesHashes = make([]Sha1Checksum, 0)
-	if j, err := json.MarshalIndent(tData, "", "\t"); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to unmarshal torrent file: %s\n", err.Error())
-		os.Exit(1)
-	} else {
-		fmt.Println("*** field PiecesHashes omitted ***")
-		fmt.Println(string(j))
-	}
-}
 
 func main() {
 	torrentLocation := flag.String("torrent", "", "specify the location of the .torrent file")
@@ -111,16 +30,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	tData := bencodeTorrent{}
-	if err := bencode.Unmarshal(torrentFile, &tData); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to unmarshal torrent file: %s\n", err.Error())
+	t, err := torrent.GetTorrent(torrentFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to parse torrent file: %s\n", err.Error())
 		os.Exit(1)
 	}
 
-	torrent, err := TorrentFromBencode(tData)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to parse torrent information: %s\n", err.Error())
-		os.Exit(1)
-	}
-	printTorrentJson(*torrent)
+	torrent.PrintTorrentJson(*t)
 }
