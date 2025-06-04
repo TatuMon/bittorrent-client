@@ -67,34 +67,56 @@ func HandshakeFromTorrent(torr *Torrent) Handshake {
 	}
 }
 
-/**
-TODO
-Finish this
-*/
 func HandshakeFromStream(r io.Reader) (*Handshake, error) {
-	
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		return nil, fmt.Errorf("failed to read handshake response: %w", err)
+	}
 
-	r.Read()
+	if buf.Len() == 0 {
+		return nil, errors.New("empty handshake response")
+	}
+
+	pstrlen, _ := buf.ReadByte()
+
+	pstrbuf := make([]byte, int(pstrlen))
+	if _, err := io.ReadFull(&buf, pstrbuf); err != nil {
+		return nil, fmt.Errorf("failed to get protocol string: %w", err)
+	}
+
+	buf.Next(8) // Discard the "reserved" part of the handshake
+
+	infoHashBuf := make([]byte, 20)
+	if _, err := io.ReadFull(&buf, infoHashBuf); err != nil {
+		return nil, fmt.Errorf("failed to get info hash: %w", err)
+	}
+
+	peerIDBuf := make([]byte, 20)
+	if _, err := io.ReadFull(&buf, peerIDBuf); err != nil {
+		return nil, fmt.Errorf("failed to get peer ID: %w", err)
+	}
+	
+	return &Handshake{
+		Pstr: string(pstrbuf),
+		InfoHash: Sha1Checksum(infoHashBuf),
+		PeerID: Sha1Checksum(peerIDBuf),
+	}, nil
 }
 
 /**
 https://wiki.theory.org/BitTorrentSpecification#Handshake
 */
 func (h *Handshake) Serialize() []byte {
-	buf := make([]byte, 68)
+	var buf bytes.Buffer
+	
+	buf.WriteByte(byte(len(h.Pstr)))
 
-	// 68 bytes in total
-	pstrlen := byte(len(h.Pstr)) // 1 byte
-	var reserved [8]byte // 8 bytes
+	var reserved [8]byte
+	buf.Write(reserved[:])
+	buf.Write(h.InfoHash[:])
+	buf.Write(h.PeerID[:])
 
-	buf[0] = pstrlen
-	writeIndex := 1
-	writeIndex += copy(buf[writeIndex:], []byte(h.Pstr))
-	writeIndex += copy(buf[writeIndex:], reserved[:])
-	writeIndex += copy(buf[writeIndex:], h.InfoHash[:])
-	writeIndex += copy(buf[writeIndex:], h.PeerID[:])
-
-	return buf
+	return buf.Bytes()
 }
 
 /**
@@ -136,11 +158,14 @@ func connectToPeer(torr *Torrent, peer Peer) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to peer %s: %w", peer.String(), err)
 	}
+	defer conn.Close()
 
-	handshake := buildHandshake(torr)
-	if _, err := conn.Write(handshake); err != nil {
+	handshake := HandshakeFromTorrent(torr)
+	if _, err := conn.Write(handshake.Serialize()); err != nil {
 		return fmt.Errorf("failure at protocol handshake: %w", err)
 	}
+
+	io.Copy()
 
 	return nil
 }
