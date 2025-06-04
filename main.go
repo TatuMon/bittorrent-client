@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/TatuMon/bittorrent-client/src/torrent"
+	"github.com/TatuMon/bittorrent-client/src/torrents"
 )
 
 
@@ -30,17 +30,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	t, err := torrent.GetTorrent(torrentFile)
+	t, err := torrents.GetTorrent(torrentFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse torrent file: %s\n", err.Error())
 		os.Exit(1)
 	}
 
-	peers, err := torrent.Announce(t)
+	peers, err := torrents.Announce(t)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to announce to tracker: %s\n", err.Error())
 		os.Exit(1)
 	}
 
-	torrent.PrintPeersJson(peers)
+	torrents.PrintPeersJson(peers)
 }

@@ -1,4 +1,4 @@
-package torrent
+package torrents
 
 import (
 	"errors"
@@ -58,7 +58,7 @@ func getTrackerURL(torr *Torrent) (string, error) {
 	return baseURL.String(), nil
 }
 
-func Announce(torr *Torrent) ([]peer, error) {
+func Announce(torr *Torrent) ([]Peer, error) {
 	trackerUrl, err := getTrackerURL(torr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tracker url: %w", err)
