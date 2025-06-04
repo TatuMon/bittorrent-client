@@ -10,6 +10,8 @@ import (
 	"io"
 	"net"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 /**
@@ -43,13 +45,17 @@ type Peer struct {
 }
 
 func (p *Peer) String() string {
-	return fmt.Sprintf("%s:%s", p.IP, p.Port)
+	return fmt.Sprintf("%s:%d", p.IP, p.Port)
+}
+
+func (p *Peer) PrintJson() {
+	j, _ := json.MarshalIndent(&p, "", "\t")
+	fmt.Println(string(j))
 }
 
 func PrintPeersJson(peers []Peer) {
 	for _, peer := range peers {
-		j, _ := json.MarshalIndent(&peer, "", "\t")
-		fmt.Println(string(j))
+		peer.PrintJson()
 	}
 }
 
@@ -146,14 +152,16 @@ func peersFromTrackerResponse(t *trackerResponse) ([]Peer, error) {
 			IP: net.IP(ipSlice),
 			Port: binary.BigEndian.Uint16(portSlice),
 		}
-		
-		peers = append(peers, newPeer)
+	
+		if !newPeer.IP.Equal(net.IPv4zero) && newPeer.Port != 0 {
+			peers = append(peers, newPeer)
+		}
 	}
 
 	return peers, nil
 }
 
-func connectToPeer(torr *Torrent, peer Peer) error {
+func ConnectToPeer(torr *Torrent, peer Peer) error {
 	conn, err := net.DialTimeout("tcp", peer.String(), 3 * time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to connect to peer %s: %w", peer.String(), err)
@@ -165,7 +173,17 @@ func connectToPeer(torr *Torrent, peer Peer) error {
 		return fmt.Errorf("failure at protocol handshake: %w", err)
 	}
 
-	io.Copy()
+	handshakeRes, err := HandshakeFromStream(conn)
+	if err != nil {
+		return fmt.Errorf("failure at protocol handshake response: %w", err)
+	}
+
+	if handshake.InfoHash != handshakeRes.InfoHash {
+		return errors.New("handshake failure: info hashes dont match")
+	}
+
+	logrus.Debugf("successfuly connected to peer %s", peer.String())
+	fmt.Printf("hola")
 
 	return nil
 }

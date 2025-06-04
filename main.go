@@ -12,12 +12,18 @@ import (
 	"os"
 
 	"github.com/TatuMon/bittorrent-client/src/torrents"
+	"github.com/sirupsen/logrus"
 )
 
 
 func main() {
+	showDebugLogs := flag.Bool("debug", false, "show debug logs")
 	torrentLocation := flag.String("torrent", "", "specify the location of the .torrent file")
 	flag.Parse()
+
+	if *showDebugLogs {
+		logrus.SetLevel(logrus.DebugLevel)
+	}
 
 	if torrentLocation == nil || *torrentLocation == "" {
 		fmt.Fprintf(os.Stderr, "must provide torrent file\n")
@@ -30,17 +36,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	t, err := torrents.GetTorrent(torrentFile)
+	torr, err := torrents.GetTorrent(torrentFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse torrent file: %s\n", err.Error())
 		os.Exit(1)
 	}
 
-	peers, err := torrents.Announce(t)
+	peers, err := torrents.Announce(torr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to announce to tracker: %s\n", err.Error())
 		os.Exit(1)
 	}
 
 	torrents.PrintPeersJson(peers)
+
+	for _, peer := range peers {
+		// go func() {
+			if err := torrents.ConnectToPeer(torr, peer); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to connect to peer: %s\n", err.Error())
+				os.Exit(1)
+			}
+		// }()
+	}
 }
