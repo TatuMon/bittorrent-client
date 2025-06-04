@@ -36,5 +36,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	torrent.PrintTorrentJson(*t)
+	peers, err := torrent.Announce(t)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to announce to tracker: %s\n", err.Error())
+		os.Exit(1)
+	}
+
+	torrent.PrintPeersJson(peers)
 }
