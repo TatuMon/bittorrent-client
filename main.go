@@ -58,6 +58,8 @@ func main() {
 			} else {
 				logrus.Debugf("[PEER %s] connected to peer\n", peer.String())
 			}
+
+			wait.Done()
 		}()
 	}
 	wait.Wait()
