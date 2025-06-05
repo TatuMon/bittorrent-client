@@ -10,7 +10,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"sync"
 
 	"github.com/TatuMon/bittorrent-client/src/torrents"
 	"github.com/sirupsen/logrus"
@@ -49,18 +48,5 @@ func main() {
 		os.Exit(1)
 	}
 
-	var wait sync.WaitGroup
-	wait.Add(len(peers))
-	for _, peer := range peers {
-		go func() {
-			if err := torrents.ConnectToPeer(torr, peer); err != nil {
-				logrus.Warningf("[PEER %s] failed to connect to peer: %s\n", peer.String(), err.Error())
-			} else {
-				logrus.Debugf("[PEER %s] connected to peer\n", peer.String())
-			}
-
-			wait.Done()
-		}()
-	}
-	wait.Wait()
+	torrents.ConnectToPeersAsync(torr, peers)
 }

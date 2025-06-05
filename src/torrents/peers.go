@@ -9,18 +9,39 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
+
+const handshakeLen = 68
 
 /**
 The user is also a peer. This is his ID
 
-It gets generated only once
+It gets generated only once when calling getClientPeerID
 */
 var clientPeerID string
 
-const handshakeLen = 68
+/**
+Collection of the currently connected peers
 
+To protect the list from race conditions, one MUST use currPeersMtx
+*/
+var currPeers []Peer
+var currPeersMtx sync.Mutex
+
+func addCurrPeer(peer Peer) {
+	currPeersMtx.Lock()
+	defer currPeersMtx.Unlock()
+
+	currPeers = append(currPeers, peer)
+}
+
+/**
+This function MUST only be called by getClientPeerID
+*/
 func genClientPeerID() {
 	prefix := []byte("-TM0001-")
 
@@ -58,30 +79,23 @@ The peers are defined by 6-byte strings, where the first 4 define the IP and the
 Both using network byte order (big-endian)
 */
 func peersFromTrackerResponse(t *trackerResponse) ([]Peer, error) {
-	if t.Peers == "" {
+	peersBin := []byte(t.Peers)
+
+	if len(peersBin) == 0 {
 		return nil, errors.New("tracker response doesn't contain peers")
 	}
 
 	const chunkSize = 6 // 6 bytes per peer
-
-	if len(t.Peers) % chunkSize != 0 {
+	totalPeers := len(peersBin) / 6
+	if len(peersBin) % chunkSize != 0 {
 		return nil, errors.New("received malformed peers")
 	}
 
-	peers := make([]Peer, 0)
-	for i := range chunkSize {
+	peers := make([]Peer, totalPeers)
+	for i := range totalPeers {
 		offset := i*chunkSize
-		ipSlice := []byte(t.Peers)[offset:offset+4]
-		portSlice := []byte(t.Peers)[offset+4:offset+6]
-
-		newPeer := Peer{
-			IP: net.IP(ipSlice),
-			Port: binary.BigEndian.Uint16(portSlice),
-		}
-	
-		if !newPeer.IP.Equal(net.IPv4zero) {
-			peers = append(peers, newPeer)
-		}
+		peers[i].IP = peersBin[offset:offset+4]
+		peers[i].Port = binary.BigEndian.Uint16(peersBin[offset+4:offset+6])
 	}
 
 	return peers, nil
@@ -158,7 +172,7 @@ func HandshakeFromStream(r []byte) (*Handshake, error) {
 	}, nil
 }
 
-func ConnectToPeer(torr *Torrent, peer Peer) error {
+func connectToPeer(torr *Torrent, peer Peer) error {
 	conn, err := net.DialTimeout("tcp", peer.String(), 60 * time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to make TCP connection: %w", err)
@@ -185,4 +199,24 @@ func ConnectToPeer(torr *Torrent, peer Peer) error {
 	}
 
 	return nil
+}
+
+func ConnectToPeersAsync(torr *Torrent, peers []Peer) {
+	go func() {
+		var wait sync.WaitGroup
+		wait.Add(len(peers))
+		for _, peer := range peers {
+			go func() {
+				defer wait.Done()
+				if err := connectToPeer(torr, peer); err != nil {
+					logrus.Warningf("[PEER %s] failed to connect to peer: %s\n", peer.String(), err.Error())
+					return
+				}
+
+				logrus.Debugf("[PEER %s] connected to peer\n", peer.String())
+				addCurrPeer(peer)
+			}()
+		}
+		wait.Wait()
+	}()
 }
