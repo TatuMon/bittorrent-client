@@ -53,6 +53,41 @@ func (p *Peer) PrintJson() {
 	fmt.Println(string(j))
 }
 
+/**
+The peers are defined by 6-byte strings, where the first 4 define the IP and the last 2 the port.
+Both using network byte order (big-endian)
+*/
+func peersFromTrackerResponse(t *trackerResponse) ([]Peer, error) {
+	if t.Peers == "" {
+		return nil, errors.New("tracker response doesn't contain peers")
+	}
+
+	const chunkSize = 6 // 6 bytes per peer
+
+	if len(t.Peers) % chunkSize != 0 {
+		return nil, errors.New("received malformed peers")
+	}
+
+	peers := make([]Peer, 0)
+	for i := range chunkSize {
+		offset := i*chunkSize
+		ipSlice := []byte(t.Peers)[offset:offset+4]
+		portSlice := []byte(t.Peers)[offset+4:offset+6]
+
+		newPeer := Peer{
+			IP: net.IP(ipSlice),
+			Port: binary.BigEndian.Uint16(portSlice),
+		}
+	
+		if !newPeer.IP.Equal(net.IPv4zero) {
+			peers = append(peers, newPeer)
+		}
+	}
+
+	return peers, nil
+}
+
+
 func PrintPeersJson(peers []Peer) {
 	for _, peer := range peers {
 		peer.PrintJson()
@@ -64,6 +99,23 @@ type Handshake struct {
 	InfoHash Sha1Checksum
 	PeerID Sha1Checksum
 }
+
+/**
+https://wiki.theory.org/BitTorrentSpecification#Handshake
+*/
+func (h *Handshake) Serialize() []byte {
+	var buf bytes.Buffer
+	var reserved [8]byte
+	
+	buf.WriteByte(byte(len(h.Pstr)))
+	buf.Write([]byte("BitTorrent protocol"))
+	buf.Write(reserved[:])
+	buf.Write(h.InfoHash[:])
+	buf.Write(h.PeerID[:])
+
+	return buf.Bytes()
+}
+
 
 func HandshakeFromTorrent(torr *Torrent) Handshake {
 	return Handshake{
@@ -104,56 +156,6 @@ func HandshakeFromStream(r []byte) (*Handshake, error) {
 		InfoHash: Sha1Checksum(infoHashBuf),
 		PeerID: Sha1Checksum(peerIDBuf),
 	}, nil
-}
-
-/**
-https://wiki.theory.org/BitTorrentSpecification#Handshake
-*/
-func (h *Handshake) Serialize() []byte {
-	var buf bytes.Buffer
-	var reserved [8]byte
-	
-	buf.WriteByte(byte(len(h.Pstr)))
-	buf.Write([]byte("BitTorrent protocol"))
-	buf.Write(reserved[:])
-	buf.Write(h.InfoHash[:])
-	buf.Write(h.PeerID[:])
-
-	return buf.Bytes()
-}
-
-/**
-The peers are defined by 6-byte strings, where the first 4 define the IP and the last 2 the port.
-Both using network byte order (big-endian)
-*/
-func peersFromTrackerResponse(t *trackerResponse) ([]Peer, error) {
-	if t.Peers == "" {
-		return nil, errors.New("tracker response doesn't contain peers")
-	}
-
-	const chunkSize = 6 // 6 bytes per peer
-
-	if len(t.Peers) % chunkSize != 0 {
-		return nil, errors.New("received malformed peers")
-	}
-
-	peers := make([]Peer, 0)
-	for i := range chunkSize {
-		offset := i*chunkSize
-		ipSlice := []byte(t.Peers)[offset:offset+4]
-		portSlice := []byte(t.Peers)[offset+4:offset+6]
-
-		newPeer := Peer{
-			IP: net.IP(ipSlice),
-			Port: binary.BigEndian.Uint16(portSlice),
-		}
-	
-		if !newPeer.IP.Equal(net.IPv4zero) && newPeer.Port != 0 {
-			peers = append(peers, newPeer)
-		}
-	}
-
-	return peers, nil
 }
 
 func ConnectToPeer(torr *Torrent, peer Peer) error {
