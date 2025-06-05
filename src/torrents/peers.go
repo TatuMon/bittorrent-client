@@ -10,8 +10,6 @@ import (
 	"io"
 	"net"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
 /**
@@ -140,9 +138,7 @@ func peersFromTrackerResponse(t *trackerResponse) ([]Peer, error) {
 		return nil, errors.New("received malformed peers")
 	}
 
-	totalPeers := len(t.Peers) / 6
-
-	peers := make([]Peer, totalPeers)
+	peers := make([]Peer, 0)
 	for i := range chunkSize {
 		offset := i*chunkSize
 		ipSlice := []byte(t.Peers)[offset:offset+4]
@@ -164,7 +160,7 @@ func peersFromTrackerResponse(t *trackerResponse) ([]Peer, error) {
 func ConnectToPeer(torr *Torrent, peer Peer) error {
 	conn, err := net.DialTimeout("tcp", peer.String(), 3 * time.Second)
 	if err != nil {
-		return fmt.Errorf("failed to connect to peer %s: %w", peer.String(), err)
+		return fmt.Errorf("failed to make TCP connection: %w", err)
 	}
 	defer conn.Close()
 
@@ -181,9 +177,6 @@ func ConnectToPeer(torr *Torrent, peer Peer) error {
 	if handshake.InfoHash != handshakeRes.InfoHash {
 		return errors.New("handshake failure: info hashes dont match")
 	}
-
-	logrus.Debugf("successfuly connected to peer %s", peer.String())
-	fmt.Printf("hola")
 
 	return nil
 }
