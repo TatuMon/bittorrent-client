@@ -79,3 +79,12 @@ func MessageFromStream(d io.Reader) (*Message, error) {
 		Payload: msgPayload,
 	}, nil
 }
+
+type Bitfield []byte
+
+func (b Bitfield) HasPiece(index int) bool {
+	byteIndex := index / 8
+	bitIndex := index - (8 * byteIndex)
+
+	return b[byteIndex]&(1<<bitIndex) != 0
+}
