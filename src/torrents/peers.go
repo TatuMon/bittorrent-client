@@ -19,6 +19,8 @@ It gets generated only once
 */
 var clientPeerID string
 
+const handshakeLen = 68
+
 func genClientPeerID() {
 	prefix := []byte("-TM0001-")
 
@@ -71,11 +73,8 @@ func HandshakeFromTorrent(torr *Torrent) Handshake {
 	}
 }
 
-func HandshakeFromStream(r io.Reader) (*Handshake, error) {
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		return nil, fmt.Errorf("failed to read handshake response: %w", err)
-	}
+func HandshakeFromStream(r []byte) (*Handshake, error) {
+	buf := bytes.NewBuffer(r)
 
 	if buf.Len() == 0 {
 		return nil, errors.New("empty handshake response")
@@ -84,19 +83,19 @@ func HandshakeFromStream(r io.Reader) (*Handshake, error) {
 	pstrlen, _ := buf.ReadByte()
 
 	pstrbuf := make([]byte, int(pstrlen))
-	if _, err := io.ReadFull(&buf, pstrbuf); err != nil {
+	if _, err := io.ReadFull(buf, pstrbuf); err != nil {
 		return nil, fmt.Errorf("failed to get protocol string: %w", err)
 	}
 
 	buf.Next(8) // Discard the "reserved" part of the handshake
 
 	infoHashBuf := make([]byte, 20)
-	if _, err := io.ReadFull(&buf, infoHashBuf); err != nil {
+	if _, err := io.ReadFull(buf, infoHashBuf); err != nil {
 		return nil, fmt.Errorf("failed to get info hash: %w", err)
 	}
 
 	peerIDBuf := make([]byte, 20)
-	if _, err := io.ReadFull(&buf, peerIDBuf); err != nil {
+	if _, err := io.ReadFull(buf, peerIDBuf); err != nil {
 		return nil, fmt.Errorf("failed to get peer ID: %w", err)
 	}
 	
@@ -112,10 +111,10 @@ https://wiki.theory.org/BitTorrentSpecification#Handshake
 */
 func (h *Handshake) Serialize() []byte {
 	var buf bytes.Buffer
+	var reserved [8]byte
 	
 	buf.WriteByte(byte(len(h.Pstr)))
-
-	var reserved [8]byte
+	buf.Write([]byte("BitTorrent protocol"))
 	buf.Write(reserved[:])
 	buf.Write(h.InfoHash[:])
 	buf.Write(h.PeerID[:])
@@ -158,10 +157,11 @@ func peersFromTrackerResponse(t *trackerResponse) ([]Peer, error) {
 }
 
 func ConnectToPeer(torr *Torrent, peer Peer) error {
-	conn, err := net.DialTimeout("tcp", peer.String(), 3 * time.Second)
+	conn, err := net.DialTimeout("tcp", peer.String(), 60 * time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to make TCP connection: %w", err)
 	}
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	defer conn.Close()
 
 	handshake := HandshakeFromTorrent(torr)
@@ -169,7 +169,11 @@ func ConnectToPeer(torr *Torrent, peer Peer) error {
 		return fmt.Errorf("failure at protocol handshake: %w", err)
 	}
 
-	handshakeRes, err := HandshakeFromStream(conn)
+	res := make([]byte, handshakeLen)
+	if _, err := conn.Read(res); err != nil {
+		return fmt.Errorf("failed to read peer's handshake response: %w", err)
+	}
+	handshakeRes, err := HandshakeFromStream(res)
 	if err != nil {
 		return fmt.Errorf("failure at protocol handshake response: %w", err)
 	}

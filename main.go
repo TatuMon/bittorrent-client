@@ -54,7 +54,7 @@ func main() {
 	for _, peer := range peers {
 		go func() {
 			if err := torrents.ConnectToPeer(torr, peer); err != nil {
-				logrus.Debugf("[PEER %s] failed to connect to peer: %s\n", peer.String(), err.Error())
+				logrus.Warningf("[PEER %s] failed to connect to peer: %s\n", peer.String(), err.Error())
 			} else {
 				logrus.Debugf("[PEER %s] connected to peer\n", peer.String())
 			}
