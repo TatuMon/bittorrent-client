@@ -18,27 +18,21 @@ import (
 
 func main() {
 	showDebugLogs := flag.Bool("debug", false, "show debug logs")
-	torrentLocation := flag.String("torrent", "", "specify the location of the .torrent file")
+	torrentPath := flag.String("torrent", "", "specify the location of the .torrent file")
 	flag.Parse()
 
 	if *showDebugLogs {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
 
-	if torrentLocation == nil || *torrentLocation == "" {
+	if torrentPath == nil || *torrentPath == "" {
 		fmt.Fprintf(os.Stderr, "must provide torrent file\n")
 		os.Exit(1)
 	}
 
-	torrentFile, err := os.Open(*torrentLocation)
+	torr, err := torrents.TorrentFromFile(*torrentPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open torrent file: %s\n", err.Error())
-		os.Exit(1)
-	}
-
-	torr, err := torrents.GetTorrent(torrentFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to parse torrent file: %s\n", err.Error())
+		fmt.Fprintf(os.Stderr, "failed to get torrent info: %s\n", err.Error())
 		os.Exit(1)
 	}
 

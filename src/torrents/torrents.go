@@ -39,7 +39,21 @@ type Torrent struct {
 	InfoHash     Sha1Checksum
 }
 
-func GenInfoHash(t bencodeTorrentInfo) (Sha1Checksum, error) {
+func TorrentFromFile(torrentPath string) (*Torrent, error) {
+	torrentFile, err := os.Open(torrentPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open torrent file: %w\n", err)
+	}
+
+	torr, err := getTorrentFile(torrentFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse torrent file: %w\n", err)
+	}
+
+	return torr, nil
+}
+
+func genInfoHash(t bencodeTorrentInfo) (Sha1Checksum, error) {
 	buf := new(bytes.Buffer)
 	if err := bencode.Marshal(buf, t); err != nil {
 		return Sha1Checksum{}, fmt.Errorf("failed to marshal field 'info': %w", err)
@@ -49,7 +63,7 @@ func GenInfoHash(t bencodeTorrentInfo) (Sha1Checksum, error) {
 	return checksum, nil
 }
 
-func TorrentFromBencode(t bencodeTorrent) (*Torrent, error) {
+func torrentFromBencode(t bencodeTorrent) (*Torrent, error) {
 	concatedHashes := []byte(t.Info.Pieces)
 	chunks := len(concatedHashes) / 20
 
@@ -59,7 +73,7 @@ func TorrentFromBencode(t bencodeTorrent) (*Torrent, error) {
 		pHashes[i] = Sha1Checksum(concatedHashes[i:end])
 	}
 
-	infoHash, err := GenInfoHash(t.Info)
+	infoHash, err := genInfoHash(t.Info)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate sha1 checksum of field 'info': %w", err)
 	}
@@ -78,14 +92,14 @@ func TorrentFromBencode(t bencodeTorrent) (*Torrent, error) {
 	}, nil
 }
 
-func GetTorrent(torrentFile *os.File) (*Torrent, error) {
+func getTorrentFile(torrentFile *os.File) (*Torrent, error) {
 	tData := bencodeTorrent{}
 	if err := bencode.Unmarshal(torrentFile, &tData); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to unmarshal torrent file: %s\n", err.Error())
 		os.Exit(1)
 	}
 
-	torrent, err := TorrentFromBencode(tData)
+	torrent, err := torrentFromBencode(tData)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse torrent information: %s\n", err.Error())
 		os.Exit(1)
