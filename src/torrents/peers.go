@@ -25,21 +25,6 @@ It gets generated only once when calling getClientPeerID
 var clientPeerID string
 
 /**
-Collection of the currently connected peers
-
-To protect the list from race conditions, one MUST use currPeersMtx
-*/
-var currPeers []Peer
-var currPeersMtx sync.Mutex
-
-func addCurrPeer(peer Peer) {
-	currPeersMtx.Lock()
-	defer currPeersMtx.Unlock()
-
-	currPeers = append(currPeers, peer)
-}
-
-/**
 This function MUST only be called by getClientPeerID
 */
 func genClientPeerID() {
@@ -201,22 +186,19 @@ func connectToPeer(torr *Torrent, peer Peer) error {
 	return nil
 }
 
-func ConnectToPeersAsync(torr *Torrent, peers []Peer) {
-	go func() {
-		var wait sync.WaitGroup
-		wait.Add(len(peers))
-		for _, peer := range peers {
-			go func() {
-				defer wait.Done()
-				if err := connectToPeer(torr, peer); err != nil {
-					logrus.Warningf("[PEER %s] failed to connect to peer: %s\n", peer.String(), err.Error())
-					return
-				}
+func startPeersWork(torr *Torrent, peers []Peer) {
+	var wait sync.WaitGroup
+	wait.Add(len(peers))
+	for _, peer := range peers {
+		go func() {
+			defer wait.Done()
+			if err := connectToPeer(torr, peer); err != nil {
+				logrus.Warningf("[PEER %s] failed to connect to peer: %s\n", peer.String(), err.Error())
+				return
+			}
 
-				logrus.Debugf("[PEER %s] connected to peer\n", peer.String())
-				addCurrPeer(peer)
-			}()
-		}
-		wait.Wait()
-	}()
+			logrus.Debugf("[PEER %s] connected to peer\n", peer.String())
+		}()
+	}
+	wait.Wait()
 }

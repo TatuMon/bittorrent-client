@@ -118,3 +118,13 @@ func PrintTorrentJson(tData Torrent) {
 		fmt.Println(string(j))
 	}
 }
+
+func StartDownload(torr *Torrent) error {
+	peers, err := announce(torr)
+	if err != nil {
+		return fmt.Errorf("failed to announce to tracker: %w\n", err)
+	}
+
+	startPeersWork(torr, peers)
+	return nil
+}
