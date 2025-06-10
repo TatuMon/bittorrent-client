@@ -1,5 +1,6 @@
 /**
 This project is being made according to the documentation written in these posts:
+https://www.bittorrent.org/beps/bep_0003.html
 https://1blog.jse.li/posts/torrent/
 https://wiki.theory.org/BitTorrentSpecification#Metainfo_File_Structure
 */

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -17,14 +16,16 @@ import (
 
 const handshakeLen = 68
 
-/**
+/*
+*
 The user is also a peer. This is his ID
 
 It gets generated only once when calling getClientPeerID
 */
 var clientPeerID string
 
-/**
+/*
+*
 This function MUST only be called by getClientPeerID
 */
 func genClientPeerID() {
@@ -59,7 +60,8 @@ func (p *Peer) PrintJson() {
 	fmt.Println(string(j))
 }
 
-/**
+/*
+*
 The peers are defined by 6-byte strings, where the first 4 define the IP and the last 2 the port.
 Both using network byte order (big-endian)
 */
@@ -72,20 +74,19 @@ func peersFromTrackerResponse(t *trackerResponse) ([]Peer, error) {
 
 	const chunkSize = 6 // 6 bytes per peer
 	totalPeers := len(peersBin) / 6
-	if len(peersBin) % chunkSize != 0 {
+	if len(peersBin)%chunkSize != 0 {
 		return nil, errors.New("received malformed peers")
 	}
 
 	peers := make([]Peer, totalPeers)
 	for i := range totalPeers {
-		offset := i*chunkSize
-		peers[i].IP = peersBin[offset:offset+4]
-		peers[i].Port = binary.BigEndian.Uint16(peersBin[offset+4:offset+6])
+		offset := i * chunkSize
+		peers[i].IP = peersBin[offset : offset+4]
+		peers[i].Port = binary.BigEndian.Uint16(peersBin[offset+4 : offset+6])
 	}
 
 	return peers, nil
 }
-
 
 func PrintPeersJson(peers []Peer) {
 	for _, peer := range peers {
@@ -94,18 +95,19 @@ func PrintPeersJson(peers []Peer) {
 }
 
 type Handshake struct {
-	Pstr string
+	Pstr     string
 	InfoHash Sha1Checksum
-	PeerID Sha1Checksum
+	PeerID   Sha1Checksum
 }
 
-/**
+/*
+*
 https://wiki.theory.org/BitTorrentSpecification#Handshake
 */
 func (h *Handshake) Serialize() []byte {
 	var buf bytes.Buffer
 	var reserved [8]byte
-	
+
 	buf.WriteByte(byte(len(h.Pstr)))
 	buf.Write([]byte("BitTorrent protocol"))
 	buf.Write(reserved[:])
@@ -115,12 +117,11 @@ func (h *Handshake) Serialize() []byte {
 	return buf.Bytes()
 }
 
-
 func HandshakeFromTorrent(torr *Torrent) Handshake {
 	return Handshake{
-		Pstr: "BitTorrent protocol",
+		Pstr:     "BitTorrent protocol",
 		InfoHash: torr.InfoHash,
-		PeerID: Sha1Checksum([]byte(getClientPeerID())),
+		PeerID:   Sha1Checksum([]byte(getClientPeerID())),
 	}
 }
 
@@ -149,56 +150,72 @@ func HandshakeFromStream(r []byte) (*Handshake, error) {
 	if _, err := io.ReadFull(buf, peerIDBuf); err != nil {
 		return nil, fmt.Errorf("failed to get peer ID: %w", err)
 	}
-	
+
 	return &Handshake{
-		Pstr: string(pstrbuf),
+		Pstr:     string(pstrbuf),
 		InfoHash: Sha1Checksum(infoHashBuf),
-		PeerID: Sha1Checksum(peerIDBuf),
+		PeerID:   Sha1Checksum(peerIDBuf),
 	}, nil
 }
 
-func connectToPeer(torr *Torrent, peer Peer) error {
-	conn, err := net.DialTimeout("tcp", peer.String(), 60 * time.Second)
+type PeerConn struct {
+	peer       *Peer
+	conn       *net.Conn
+	unchoked   bool
+	interested bool
+}
+
+func connectToPeer(torr *Torrent, peer *Peer) (*PeerConn, error) {
+	conn, err := net.DialTimeout("tcp", peer.String(), 60*time.Second)
 	if err != nil {
-		return fmt.Errorf("failed to make TCP connection: %w", err)
+		return nil, fmt.Errorf("failed to make TCP connection: %w", err)
 	}
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
-	defer conn.Close()
+	defer conn.SetDeadline(time.Time{})
 
 	handshake := HandshakeFromTorrent(torr)
 	if _, err := conn.Write(handshake.Serialize()); err != nil {
-		return fmt.Errorf("failure at protocol handshake: %w", err)
+		return nil, fmt.Errorf("failure at protocol handshake: %w", err)
 	}
 
 	res := make([]byte, handshakeLen)
 	if _, err := conn.Read(res); err != nil {
-		return fmt.Errorf("failed to read peer's handshake response: %w", err)
+		return nil, fmt.Errorf("failed to read peer's handshake response: %w", err)
 	}
 	handshakeRes, err := HandshakeFromStream(res)
 	if err != nil {
-		return fmt.Errorf("failure at protocol handshake response: %w", err)
+		return nil, fmt.Errorf("failure at protocol handshake response: %w", err)
 	}
 
 	if handshake.InfoHash != handshakeRes.InfoHash {
-		return errors.New("handshake failure: info hashes dont match")
+		return nil, errors.New("handshake failure: info hashes dont match")
 	}
 
-	return nil
+	return &PeerConn{
+		peer:     peer,
+		conn:     &conn,
+		unchoked: false,
+		interested: false,
+	}, nil
 }
 
-func startPeersWork(torr *Torrent, peers []Peer) {
-	var wait sync.WaitGroup
-	wait.Add(len(peers))
-	for _, peer := range peers {
+func connectPeersAsync(torr *Torrent, peers []Peer) chan *PeerConn {
+	channel := make(chan *PeerConn, len(peers))
+
+	for i, peer := range peers {
 		go func() {
-			defer wait.Done()
-			if err := connectToPeer(torr, peer); err != nil {
-				logrus.Warningf("[PEER %s] failed to connect to peer: %s\n", peer.String(), err.Error())
-				return
+			pConn, err := connectToPeer(torr, &peer)
+			if err != nil {
+				logrus.Warnf("failed to connect to peer %s: %s", peer.String(), err.Error())
 			}
 
-			logrus.Debugf("[PEER %s] connected to peer\n", peer.String())
+			channel <- pConn
+
+			if i == len(peers) - 1 {
+				close(channel)
+			}
 		}()
 	}
-	wait.Wait()
+
+	return channel
 }

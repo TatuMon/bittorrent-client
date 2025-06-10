@@ -39,6 +39,16 @@ type Torrent struct {
 	InfoHash     Sha1Checksum
 }
 
+func (t *Torrent) calculatePieceSize(index uint) uint {
+	// As stated here: https://wiki.theory.org/BitTorrentSpecification#Notes  
+	// All pieces are of equal size, except for the last one
+	if index != uint(len(t.PiecesHashes)-1) {
+		return t.PieceSize
+	}
+
+	return t.FileSize % uint(len(t.PiecesHashes))
+}
+
 func TorrentFromFile(torrentPath string) (*Torrent, error) {
 	torrentFile, err := os.Open(torrentPath)
 	if err != nil {
@@ -125,6 +135,8 @@ func StartDownload(torr *Torrent) error {
 		return fmt.Errorf("failed to announce to tracker: %w\n", err)
 	}
 
-	startPeersWork(torr, peers)
+	peersConns := connectPeersAsync(torr, peers)
+	startPiecesDownload(torr, peersConns)
+
 	return nil
 }
