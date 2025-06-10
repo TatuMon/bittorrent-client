@@ -86,12 +86,12 @@ func (b Bitfield) HasPiece(index int) bool {
 	byteIndex := index / 8
 	bitIndex := index - (8 * byteIndex)
 
-	return b[byteIndex]&(1<<bitIndex) != 0
+	return b[byteIndex]&(1<<(7 - bitIndex)) != 0
 }
 
 func (b Bitfield) SetPiece(index int) {
 	byteIndex := index / 8
 	bitIndex := index - (8 * byteIndex)
 
-	b[byteIndex] |= (1<<bitIndex)
+	b[byteIndex] |= (1<<(7 - bitIndex))
 }
