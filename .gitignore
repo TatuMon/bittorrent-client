@@ -1,2 +1,6 @@
 # Torrent files used for testing
 *.torrent
+
+# Executable
+bittorrent-client
+bittorrent-client.exe
