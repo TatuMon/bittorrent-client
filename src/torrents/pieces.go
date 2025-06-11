@@ -1,6 +1,8 @@
 package torrents
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/fatih/color"
@@ -32,8 +34,14 @@ func (p *PieceProgress) writeTargetFile(filepath string) error {
 	return nil
 }
 
-func (p *PieceProgress) downloadPiece(peer *PeerConn) error {
-	return nil	
+func (p *PieceProgress) requestPiece(peer *PeerConn) error {
+	if !peer.bitfield.HasPiece(p.index) {
+		return errors.New(fmt.Sprintf("peer doesn't have piece %d", p.index))
+	}
+
+	
+
+	return nil
 }
 
 func newPieceProgress(index int, expectedHash Sha1Checksum, pieceSize uint) *PieceProgress {
@@ -63,19 +71,49 @@ func startPiecesDownload(torr *Torrent, peersConns chan *PeerConn) {
 	var wg sync.WaitGroup
 	wg.Add(len(torr.PiecesHashes))
 
-	for pieceProgress := range pChan {
+	for pp := range pChan {
+		pieceProgress := pp
 		go func() {
 			peer := <-peersConns
-			err := pieceProgress.downloadPiece(peer)
+
+			msg, err := peer.read()
 			if err != nil {
-				logrus.Warnf("failed to download piece %d: %s", pieceProgress.index, err.Error())
+				logrus.Warnf("failed to read from connection %s: %s", peer.peer.String(), err.Error())
+				peersConns <- peer
 				pChan <- pieceProgress
 				return
 			}
 
-			if pieceProgress.hasFinished() {
-				pieceProgress.writeTargetFile(torr.FileName)
-				finishedPieces++
+			if !peer.unchoked {
+				peersConns <- peer
+				pChan <- pieceProgress
+				return
+			}
+
+			if !peer.interested {
+				if err := peer.sendInterestedMsg(); err != nil {
+					logrus.Warnf("failed to unchoke: %s. dropping connection.", err.Error())
+					peer.conn.Close()
+					pChan <- pieceProgress
+					return
+				}
+			}
+
+			for peer.reqBacklog < maxReqBacklog {
+				peer.reqBacklog++
+
+				err := pieceProgress.requestPiece(peer)
+				if err != nil {
+					logrus.Warnf("failed to download piece %d: %s", pieceProgress.index, err.Error())
+					peersConns <- peer
+					pChan <- pieceProgress
+					return
+				}
+
+				if pieceProgress.hasFinished() {
+					pieceProgress.writeTargetFile(torr.FileName)
+					finishedPieces++
+				}
 			}
 
 			if finishedPieces == len(torr.PiecesHashes) {

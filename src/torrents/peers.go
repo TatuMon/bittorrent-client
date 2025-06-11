@@ -15,6 +15,7 @@ import (
 )
 
 const handshakeLen = 68
+const maxReqBacklog = 5
 
 /*
 *
@@ -160,9 +161,68 @@ func HandshakeFromStream(r []byte) (*Handshake, error) {
 
 type PeerConn struct {
 	peer       *Peer
-	conn       *net.Conn
+	conn       net.Conn
 	unchoked   bool
 	interested bool
+	reqBacklog int
+	bitfield   *Bitfield
+}
+
+func (p *PeerConn) read() (*Message, error) {
+	msg, err := MessageFromStream(p.conn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read from connection to %s: %w", p.peer.String(), err)
+	}
+
+	logrus.Debugf("received message of type '%s' from %s", msg.ID.String(), p.peer.String())
+
+	switch msg.ID {
+	case MsgChoke:
+		p.unchoked = false
+	case MsgUnchoke:
+		p.unchoked = true
+	case MsgBitField:
+		p.bitfield = (*Bitfield)(&msg.Payload)
+	// I dont expect to receive other type of messages
+	}
+
+	return msg, nil
+}
+
+func (p *PeerConn) sendInterestedMsg() error {
+	msg := Message{
+		ID: MsgInterested,
+	}
+
+	m := msg.Serialize()
+	if _, err := p.conn.Write(m); err != nil {
+		return fmt.Errorf("failed to write to connection: %w", err)
+	}
+
+	logrus.Debugf("'%s' message sent to peer %s", msg.ID.String(), p.peer.String())
+
+	return nil
+}
+
+func (p *PeerConn) sendRequestMsg(pieceIndex uint32, beginOffset uint32, blockLen uint32) error {
+	payloadBuf := make([]byte, 12)
+	binary.BigEndian.AppendUint32(payloadBuf, pieceIndex)
+	binary.BigEndian.AppendUint32(payloadBuf, beginOffset)
+	binary.BigEndian.AppendUint32(payloadBuf, blockLen)
+
+	msg := Message{
+		ID: MsgRequest,
+		Payload: payloadBuf,
+	}
+
+	m := msg.Serialize()
+	if _, err := p.conn.Write(m); err != nil {
+		return fmt.Errorf("failed to write to connection: %w", err)
+	}
+
+	logrus.Debugf("'%s' message sent to peer %s", msg.ID.String(), p.peer.String())
+
+	return nil
 }
 
 func connectToPeer(torr *Torrent, peer *Peer) (*PeerConn, error) {
@@ -175,26 +235,30 @@ func connectToPeer(torr *Torrent, peer *Peer) (*PeerConn, error) {
 
 	handshake := HandshakeFromTorrent(torr)
 	if _, err := conn.Write(handshake.Serialize()); err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("failure at protocol handshake: %w", err)
 	}
 
 	res := make([]byte, handshakeLen)
 	if _, err := conn.Read(res); err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("failed to read peer's handshake response: %w", err)
 	}
 	handshakeRes, err := HandshakeFromStream(res)
 	if err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("failure at protocol handshake response: %w", err)
 	}
 
 	if handshake.InfoHash != handshakeRes.InfoHash {
+		conn.Close()
 		return nil, errors.New("handshake failure: info hashes dont match")
 	}
 
 	return &PeerConn{
-		peer:     peer,
-		conn:     &conn,
-		unchoked: false,
+		peer:       peer,
+		conn:       conn,
+		unchoked:   false,
 		interested: false,
 	}, nil
 }
@@ -202,18 +266,15 @@ func connectToPeer(torr *Torrent, peer *Peer) (*PeerConn, error) {
 func connectPeersAsync(torr *Torrent, peers []Peer) chan *PeerConn {
 	channel := make(chan *PeerConn, len(peers))
 
-	for i, peer := range peers {
+	for _, peer := range peers {
 		go func() {
 			pConn, err := connectToPeer(torr, &peer)
 			if err != nil {
 				logrus.Warnf("failed to connect to peer %s: %s", peer.String(), err.Error())
+				return
 			}
 
 			channel <- pConn
-
-			if i == len(peers) - 1 {
-				close(channel)
-			}
 		}()
 	}
 

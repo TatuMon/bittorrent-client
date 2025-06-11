@@ -9,6 +9,33 @@ import (
 
 type MessageID uint8
 
+func (m *MessageID) String() string {
+	switch *m {
+	case MsgChoke:
+		return "choke"
+	case MsgUnchoke:
+		return "unchoke"
+	case MsgInterested:
+		return "interested"
+	case MsgNotInterested:
+		return "not interested"
+	case MsgHave:
+		return "have"
+	case MsgBitField:
+		return "bitfield"
+	case MsgRequest:
+		return "request"
+	case MsgPiece:
+		return "piece"
+	case MsgCancel:
+		return "cancel"
+	case MsgPort:
+		return "port"
+	default:
+		return "unknown"
+	}
+}
+
 const (
 	MsgChoke MessageID = iota
 	MsgUnchoke

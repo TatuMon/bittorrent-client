@@ -138,5 +138,7 @@ func StartDownload(torr *Torrent) error {
 	peersConns := connectPeersAsync(torr, peers)
 	startPiecesDownload(torr, peersConns)
 
+	close(peersConns)
+
 	return nil
 }
