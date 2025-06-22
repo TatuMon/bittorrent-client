@@ -90,17 +90,19 @@ func torrentFromBencode(t bencodeTorrent) (*Torrent, error) {
 	concatedHashes := []byte(t.Info.Pieces)
 	chunks := len(concatedHashes) / 20
 
+	if len(concatedHashes) % 20 != 0 {
+		return nil, fmt.Errorf("received malformed pieces hashes")
+	}
+
 	pHashes := make([]Sha1Checksum, chunks)
 	for i := range chunks {
-		end := (i * 20) + 20
-		pHashes[i] = Sha1Checksum(concatedHashes[i:end])
+		copy(pHashes[i][:], concatedHashes[i*20:(i+1)*20])
 	}
 
 	infoHash, err := genInfoHash(t.Info)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate sha1 checksum of field 'info': %w", err)
 	}
-
 
 	return &Torrent{
 		Announce:     t.Announce,

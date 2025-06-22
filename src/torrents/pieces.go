@@ -66,10 +66,8 @@ func (p *PieceProgress) calcNextBlockSize() uint {
 	// Last block might be smaller than the rest
 	if p.size-p.requested < uint(blockSize) {
 		s := p.size - p.requested
-		logrus.Debugf("[[ PINDEX: %d || SIZE: %d || REQUESTED: %d || BLOCK SIZE: %d ]]", p.index, p.size, p.requested, s)
 		return s
 	}
-	logrus.Debugf("[[ PINDEX: %d || SIZE: %d || REQUESTED: %d || BLOCK SIZE: %d ]]", p.index, p.size, p.requested, blockSize)
 
 	return uint(blockSize)
 }
@@ -78,7 +76,7 @@ func (p *PieceProgress) ValidateHash() error {
 	h := sha1.Sum(p.buf)
 
 	if !bytes.Equal(h[:], p.expectedHash[:]) {
-		return fmt.Errorf("invalid piece: hash mismatch")
+		return fmt.Errorf("hash mismatch.")
 	}
 
 	return nil
@@ -144,12 +142,6 @@ func attemptPieceDownload(peer *PeerConn, piece *PieceProgress) error {
 		}
 	}
 
-	logrus.Debugf("piece %d fully downloaded (%d/%d). verifying hash...", piece.index, piece.downloaded, piece.size)
-
-	if err := piece.ValidateHash(); err != nil {
-		return fmt.Errorf("failed to download piece %d: %w", piece.index, err)
-	}
-
 	return nil
 }
 
@@ -187,6 +179,14 @@ func startPiecesDownload(torr *Torrent, peersChan chan *PeerConn, workCtx contex
 
 				if err := attemptPieceDownload(peer, pieceProgress); err != nil {
 					logrus.Warnf("peer %s couldn't download piece %d: %s", peer.peer.String(), pieceProgress.index, err.Error())
+					piecesChan <- pieceProgress
+					continue
+				}
+
+				if err := pieceProgress.ValidateHash(); err != nil {
+					logrus.Warnf("piece %d invalid: %s. retrying", pieceProgress.index, err.Error())
+					pieceProgress.requested = 0
+					pieceProgress.downloaded = 0
 					piecesChan <- pieceProgress
 					continue
 				}
