@@ -20,6 +20,7 @@ import (
 func main() {
 	showDebugLogs := flag.Bool("debug", false, "show debug logs")
 	torrentPath := flag.String("torrent", "", "specify the location of the .torrent file")
+	showTorrentPreview := flag.Bool("preview", false, "prints the information about the .torrent, without downloading anything")
 	flag.Parse()
 
 	if *showDebugLogs {
@@ -35,6 +36,17 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to get torrent info: %s\n", err.Error())
 		os.Exit(1)
+	}
+
+	if *showTorrentPreview {
+		s, err := torr.JsonPreviewIndented()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to show torrent preview: %s\n", err.Error())
+			os.Exit(1)
+		}
+
+		fmt.Printf("%s", s)
+		return
 	}
 
 	torrents.StartDownload(torr)

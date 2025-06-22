@@ -76,7 +76,7 @@ func startPiecesDownload(torr *Torrent, peersConns chan *PeerConn) {
 		go func() {
 			peer := <-peersConns
 
-			msg, err := peer.read()
+			_, err := peer.read()
 			if err != nil {
 				logrus.Warnf("failed to read from connection %s: %s", peer.peer.String(), err.Error())
 				peersConns <- peer

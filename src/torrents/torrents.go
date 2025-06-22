@@ -49,6 +49,17 @@ func (t *Torrent) calculatePieceSize(index uint) uint {
 	return t.FileSize % uint(len(t.PiecesHashes))
 }
 
+func (t *Torrent) JsonPreviewIndented() (string, error) {
+	t.PiecesHashes = make([]Sha1Checksum, 0)
+	j, err := json.MarshalIndent(t, "", "\t")
+	if err != nil {
+		return "", fmt.Errorf("failed to unmarshal torrent file: %w", err)
+	}
+
+	return string(j), nil
+}
+
+
 func TorrentFromFile(torrentPath string) (*Torrent, error) {
 	torrentFile, err := os.Open(torrentPath)
 	if err != nil {
@@ -116,17 +127,6 @@ func getTorrentFile(torrentFile *os.File) (*Torrent, error) {
 	}
 
 	return torrent, nil
-}
-
-func PrintTorrentJson(tData Torrent) {
-	tData.PiecesHashes = make([]Sha1Checksum, 0)
-	if j, err := json.MarshalIndent(tData, "", "\t"); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to unmarshal torrent file: %s\n", err.Error())
-		os.Exit(1)
-	} else {
-		fmt.Println("*** field PiecesHashes omitted ***")
-		fmt.Println(string(j))
-	}
 }
 
 func StartDownload(torr *Torrent) error {
