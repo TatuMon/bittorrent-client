@@ -90,21 +90,18 @@ func MessageFromStream(d io.Reader) (*Message, error) {
 	if msgLen == 0 {
 		return nil, nil
 	}
-	
-	msgID := make([]byte, 1)
-	if _, err := io.ReadFull(d, msgID); err != nil {
-		return nil, fmt.Errorf("failed to read message id: %w", err)
+
+	msgBuf := make([]byte, msgLen)
+	if _, err := io.ReadFull(d, msgBuf); err != nil {
+		return nil, fmt.Errorf("failed to read message content: %w", err)
 	}
 
-	msgPayload := make([]byte, msgLen - 1)
-	if _, err := io.ReadFull(d, msgPayload); err != nil {
-		return nil, fmt.Errorf("failed to read message payload: %w", err)
+	m := Message{
+		ID: MessageID(msgBuf[0]),
+		Payload: msgBuf[1:],
 	}
 
-	return &Message{
-		ID: MessageID(msgID[0]),
-		Payload: msgPayload,
-	}, nil
+	return &m, nil
 }
 
 type Bitfield []byte

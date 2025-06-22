@@ -2,6 +2,7 @@ package torrents
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -160,7 +162,7 @@ func HandshakeFromStream(r []byte) (*Handshake, error) {
 }
 
 type PeerConn struct {
-	peer       *Peer
+	peer       Peer
 	conn       net.Conn
 	unchoked   bool
 	interested bool
@@ -171,10 +173,14 @@ type PeerConn struct {
 func (p *PeerConn) read() (*Message, error) {
 	msg, err := MessageFromStream(p.conn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read from connection to %s: %w", p.peer.String(), err)
+		return nil, fmt.Errorf("failed to read from connection: %w", err)
 	}
 
-	logrus.Debugf("received message of type '%s' from %s", msg.ID.String(), p.peer.String())
+	if msg == nil {
+		logrus.Debugf("received message of type 'keep alive' from %s", p.peer.String())
+	} else {
+		logrus.Debugf("received message of type '%s' from %s", msg.ID.String(), p.peer.String())
+	}
 
 	switch msg.ID {
 	case MsgChoke:
@@ -183,6 +189,10 @@ func (p *PeerConn) read() (*Message, error) {
 		p.unchoked = true
 	case MsgBitField:
 		p.bitfield = (*Bitfield)(&msg.Payload)
+	case MsgHave:
+		if p.bitfield != nil {
+			p.bitfield.SetPiece(int(binary.BigEndian.Uint32(msg.Payload)))
+		}
 	// I dont expect to receive other type of messages
 	}
 
@@ -204,11 +214,26 @@ func (p *PeerConn) sendInterestedMsg() error {
 	return nil
 }
 
+func (p *PeerConn) sendUnchoke() error {
+	msg := Message{
+		ID: MsgUnchoke,
+	}
+
+	m := msg.Serialize()
+	if _, err := p.conn.Write(m); err != nil {
+		return fmt.Errorf("failed to write to connection: %w", err)
+	}
+
+	logrus.Debugf("'%s' message sent to peer %s", msg.ID.String(), p.peer.String())
+
+	return nil
+}
+
 func (p *PeerConn) sendRequestMsg(pieceIndex uint32, beginOffset uint32, blockLen uint32) error {
 	payloadBuf := make([]byte, 12)
-	binary.BigEndian.AppendUint32(payloadBuf, pieceIndex)
-	binary.BigEndian.AppendUint32(payloadBuf, beginOffset)
-	binary.BigEndian.AppendUint32(payloadBuf, blockLen)
+	binary.BigEndian.PutUint32(payloadBuf[0:4], pieceIndex)
+	binary.BigEndian.PutUint32(payloadBuf[4:8], beginOffset)
+	binary.BigEndian.PutUint32(payloadBuf[8:12], blockLen)
 
 	msg := Message{
 		ID: MsgRequest,
@@ -225,7 +250,7 @@ func (p *PeerConn) sendRequestMsg(pieceIndex uint32, beginOffset uint32, blockLe
 	return nil
 }
 
-func connectToPeer(torr *Torrent, peer *Peer) (*PeerConn, error) {
+func connectToPeer(torr *Torrent, peer Peer) (*PeerConn, error) {
 	conn, err := net.DialTimeout("tcp", peer.String(), 60*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make TCP connection: %w", err)
@@ -255,26 +280,54 @@ func connectToPeer(torr *Torrent, peer *Peer) (*PeerConn, error) {
 		return nil, errors.New("handshake failure: info hashes dont match")
 	}
 
-	return &PeerConn{
+	pc := &PeerConn{
 		peer:       peer,
 		conn:       conn,
 		unchoked:   false,
 		interested: false,
-	}, nil
+	}
+
+	for !pc.unchoked {
+		_, err := pc.read()
+		if err != nil {
+			return nil, fmt.Errorf("failed to wait for bitfield: %w", err)
+		}
+	}
+
+	return pc, nil
 }
 
-func connectPeersAsync(torr *Torrent, peers []Peer) chan *PeerConn {
+/*
+If workCtx is done, the channel is not yet closed, but no more peers are added to it from this function.
+*/
+func connectPeersAsync(torr *Torrent, peers []Peer, workCtx context.Context) chan *PeerConn {
 	channel := make(chan *PeerConn, len(peers))
+	select {
+	case <-workCtx.Done():
+		return channel
+	default:
+	}
 
-	for _, peer := range peers {
+	peersConnectedTotal := atomic.Uint64{}
+
+	for _, p := range peers {
+		peer := p
 		go func() {
-			pConn, err := connectToPeer(torr, &peer)
+			pConn, err := connectToPeer(torr, peer)
 			if err != nil {
 				logrus.Warnf("failed to connect to peer %s: %s", peer.String(), err.Error())
 				return
 			}
 
+			select {
+			case <-workCtx.Done():
+				return
+			default:
+			}
+
 			channel <- pConn
+			peersConnectedTotal.Add(1)
+			logrus.Debugf("%d/%d peers connected", peersConnectedTotal.Load(), len(peers))
 		}()
 	}
 

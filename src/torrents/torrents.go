@@ -2,12 +2,14 @@ package torrents
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"os"
 
 	bencode "github.com/jackpal/bencode-go"
+	"github.com/sirupsen/logrus"
 )
 
 type Sha1Checksum [20]byte
@@ -135,10 +137,19 @@ func StartDownload(torr *Torrent) error {
 		return fmt.Errorf("failed to announce to tracker: %w\n", err)
 	}
 
-	peersConns := connectPeersAsync(torr, peers)
-	startPiecesDownload(torr, peersConns)
+	workCtx, _ := context.WithCancelCause(context.Background())
 
-	close(peersConns)
+	peersConns := connectPeersAsync(torr, peers, workCtx)
+	donePieces := startPiecesDownload(torr, peersConns, workCtx)
 
-	return nil
+	for {
+		select {
+		case <-workCtx.Done():
+			close(peersConns)
+			fmt.Printf("download finished. cause: %s", context.Cause(workCtx).Error())
+			return nil
+		case p := <-donePieces:
+			logrus.Debugf("piece %d downloaded", p.index)
+		}
+	}
 }

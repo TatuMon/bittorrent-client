@@ -1,11 +1,15 @@
 package torrents
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha1"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"sync"
+	"sync/atomic"
+	"time"
 
-	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
 )
 
@@ -13,44 +17,71 @@ import (
 const blockSize = 16 * 1024
 const maxPipelinedRequests = 5
 
+type PieceBlock struct {
+	Index uint32
+	Begin uint32
+	Data  []byte
+}
+
+func PieceBlockFromMessage(msg *Message) (*PieceBlock, error) {
+	if msg.ID != MsgPiece {
+		return nil, fmt.Errorf("wrong message given: must be of type 'piece' but '%s' given", msg.ID.String())
+	}
+
+	p := PieceBlock{
+		Index: binary.BigEndian.Uint32(msg.Payload[0:4]),
+		Begin: binary.BigEndian.Uint32(msg.Payload[4:8]),
+		Data:  msg.Payload[8:],
+	}
+
+	return &p, nil
+}
+
 /*
-*
 PieceProgress represents the download process of a single piece.
 
 A single PieceProgress MUST be handled by at most ONE worker goroutine
 */
 type PieceProgress struct {
-	index int
-	buf []byte
+	index        int
+	size         uint
+	buf          []byte
 	expectedHash Sha1Checksum
-	completed bool
-}
-
-func (p *PieceProgress) hasFinished() bool {
-	return false
-}
-
-func (p *PieceProgress) writeTargetFile(filepath string) error {
-	return nil
-}
-
-func (p *PieceProgress) requestPiece(peer *PeerConn) error {
-	if !peer.bitfield.HasPiece(p.index) {
-		return errors.New(fmt.Sprintf("peer doesn't have piece %d", p.index))
-	}
-
-	
-
-	return nil
+	completed    bool
+	requested    uint
+	downloaded   uint
 }
 
 func newPieceProgress(index int, expectedHash Sha1Checksum, pieceSize uint) *PieceProgress {
 	return &PieceProgress{
-		index: index,
-		buf:   make([]byte, pieceSize),
+		index:        index,
+		size:         pieceSize,
+		buf:          make([]byte, pieceSize),
 		expectedHash: expectedHash,
-		completed: false,
+		completed:    false,
 	}
+}
+
+func (p *PieceProgress) calcNextBlockSize() uint {
+	// Last block might be smaller than the rest
+	if p.size-p.requested < uint(blockSize) {
+		s := p.size - p.requested
+		logrus.Debugf("[[ PINDEX: %d || SIZE: %d || REQUESTED: %d || BLOCK SIZE: %d ]]", p.index, p.size, p.requested, s)
+		return s
+	}
+	logrus.Debugf("[[ PINDEX: %d || SIZE: %d || REQUESTED: %d || BLOCK SIZE: %d ]]", p.index, p.size, p.requested, blockSize)
+
+	return uint(blockSize)
+}
+
+func (p *PieceProgress) ValidateHash() error {
+	h := sha1.Sum(p.buf)
+
+	if !bytes.Equal(h[:], p.expectedHash[:]) {
+		return fmt.Errorf("invalid piece: hash mismatch")
+	}
+
+	return nil
 }
 
 func genPiecesProgresses(torr *Torrent) chan *PieceProgress {
@@ -64,67 +95,110 @@ func genPiecesProgresses(torr *Torrent) chan *PieceProgress {
 	return channel
 }
 
-func startPiecesDownload(torr *Torrent, peersConns chan *PeerConn) {
-	pChan := genPiecesProgresses(torr)
-	finishedPieces := 0
+func attemptPieceDownload(peer *PeerConn, piece *PieceProgress) error {
+	peer.conn.SetDeadline(time.Now().Add(time.Second * 30))
+	defer peer.conn.SetDeadline(time.Time{})
 
-	var wg sync.WaitGroup
-	wg.Add(len(torr.PiecesHashes))
-
-	for pp := range pChan {
-		pieceProgress := pp
-		go func() {
-			peer := <-peersConns
-
-			_, err := peer.read()
-			if err != nil {
-				logrus.Warnf("failed to read from connection %s: %s", peer.peer.String(), err.Error())
-				peersConns <- peer
-				pChan <- pieceProgress
-				return
-			}
-
-			if !peer.unchoked {
-				peersConns <- peer
-				pChan <- pieceProgress
-				return
-			}
-
-			if !peer.interested {
-				if err := peer.sendInterestedMsg(); err != nil {
-					logrus.Warnf("failed to unchoke: %s. dropping connection.", err.Error())
-					peer.conn.Close()
-					pChan <- pieceProgress
-					return
-				}
-			}
-
-			for peer.reqBacklog < maxReqBacklog {
-				peer.reqBacklog++
-
-				err := pieceProgress.requestPiece(peer)
+	for piece.downloaded < piece.size {
+		if peer.unchoked {
+			for peer.reqBacklog < maxReqBacklog && piece.requested < piece.size {
+				blockSize := piece.calcNextBlockSize()
+				err := peer.sendRequestMsg(uint32(piece.index), uint32(piece.requested), uint32(blockSize))
 				if err != nil {
-					logrus.Warnf("failed to download piece %d: %s", pieceProgress.index, err.Error())
-					peersConns <- peer
-					pChan <- pieceProgress
-					return
+					return fmt.Errorf("failed to request piece %d: %w", piece.index, err)
 				}
 
-				if pieceProgress.hasFinished() {
-					pieceProgress.writeTargetFile(torr.FileName)
-					finishedPieces++
+				peer.reqBacklog++
+				piece.requested += blockSize
+			}
+		}
+
+		msg, err := peer.read()
+		if err != nil {
+			return fmt.Errorf("failed to read from peer: %w", err)
+		}
+
+		if msg.ID == MsgPiece {
+			block, err := PieceBlockFromMessage(msg)
+
+			if err != nil {
+				return fmt.Errorf("failed to get block from message: %w", err)
+			}
+
+			if block.Index != uint32(piece.index) {
+				return fmt.Errorf("wrong piece block: expected index %d, got %d", piece.index, block.Index)
+			}
+
+			if block.Begin >= uint32(piece.size) {
+				return fmt.Errorf("wrong piece block: offset exceedes piece size. %d >= %d", block.Begin, piece.size)
+			}
+
+			if uint64(block.Begin)+uint64(len(block.Data)) > uint64(len(piece.buf)) {
+				return errors.New("wrong piece block: block data overflows piece.")
+			}
+
+			copy(piece.buf[block.Begin:], block.Data)
+
+			peer.reqBacklog--
+			piece.downloaded += uint(len(block.Data))
+		}
+	}
+
+	logrus.Debugf("piece %d fully downloaded (%d/%d). verifying hash...", piece.index, piece.downloaded, piece.size)
+
+	if err := piece.ValidateHash(); err != nil {
+		return fmt.Errorf("failed to download piece %d: %w", piece.index, err)
+	}
+
+	return nil
+}
+
+func startPiecesDownload(torr *Torrent, peersChan chan *PeerConn, workCtx context.Context) chan *PieceProgress {
+	piecesChan := genPiecesProgresses(torr)
+	donePieces := make(chan *PieceProgress, len(torr.PiecesHashes))
+	donePiecesTotal := atomic.Uint64{}
+
+	select {
+	case <-workCtx.Done():
+		close(piecesChan)
+		close(donePieces)
+		return donePieces
+	default:
+	}
+
+	for p := range peersChan {
+		peer := p
+		go func() {
+			if err := peer.sendUnchoke(); err != nil {
+				logrus.Warnf("peer %s couldn't get unchoked: %s", peer.peer.String(), err.Error())
+				return
+			}
+
+			if err := peer.sendInterestedMsg(); err != nil {
+				logrus.Warnf("peer %s couldn't send 'interested': %s", peer.peer.String(), err.Error())
+				return
+			}
+
+			for pieceProgress := range piecesChan {
+				if peer.bitfield == nil || !peer.bitfield.HasPiece(pieceProgress.index) {
+					piecesChan <- pieceProgress
+					continue
 				}
-			}
 
-			if finishedPieces == len(torr.PiecesHashes) {
-				close(pChan)
-			}
+				if err := attemptPieceDownload(peer, pieceProgress); err != nil {
+					logrus.Warnf("peer %s couldn't download piece %d: %s", peer.peer.String(), pieceProgress.index, err.Error())
+					piecesChan <- pieceProgress
+					continue
+				}
 
-			color.Green("piece %d downloaded successfuly", pieceProgress.index)
-			wg.Done()
+				donePieces <- pieceProgress
+				donePiecesTotal.Add(1)
+
+				percent := float64(donePiecesTotal.Load()) / float64(len(torr.PiecesHashes)) * 100
+				fmt.Printf("(%0.2f%%) Downloaded piece #%d\n", percent, pieceProgress.index)
+			}
 		}()
 	}
 
-	wg.Wait()
-	color.Green("download finishes successfuly")
+	return donePieces
 }
