@@ -25,6 +25,8 @@ func main() {
 
 	if *showDebugLogs {
 		logrus.SetLevel(logrus.DebugLevel)
+	} else {
+		logrus.SetLevel(logrus.ErrorLevel)
 	}
 
 	if torrentPath == nil || *torrentPath == "" {
