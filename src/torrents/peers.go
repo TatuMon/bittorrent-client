@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/TatuMon/bittorrent-client/logger"
 	"github.com/sirupsen/logrus"
 )
 
@@ -177,9 +178,9 @@ func (p *PeerConn) read() (*Message, error) {
 	}
 
 	if msg == nil {
-		logrus.Debugf("received message of type 'keep alive' from %s", p.peer.String())
+		logger.LogRecvMessage("received message of type 'keep alive' from %s", p.peer.String())
 	} else {
-		logrus.Debugf("received message of type '%s' from %s", msg.ID.String(), p.peer.String())
+		logger.LogRecvMessage("received message of type '%s' from %s", msg.ID.String(), p.peer.String())
 	}
 
 	switch msg.ID {
@@ -209,7 +210,7 @@ func (p *PeerConn) sendInterestedMsg() error {
 		return fmt.Errorf("failed to write to connection: %w", err)
 	}
 
-	logrus.Debugf("'%s' message sent to peer %s", msg.ID.String(), p.peer.String())
+	logger.LogSentMessage("'%s' message sent to peer %s", msg.ID.String(), p.peer.String())
 
 	return nil
 }
@@ -224,7 +225,7 @@ func (p *PeerConn) sendUnchoke() error {
 		return fmt.Errorf("failed to write to connection: %w", err)
 	}
 
-	logrus.Debugf("'%s' message sent to peer %s", msg.ID.String(), p.peer.String())
+	logger.LogSentMessage("'%s' message sent to peer %s", msg.ID.String(), p.peer.String())
 
 	return nil
 }
@@ -245,7 +246,7 @@ func (p *PeerConn) sendRequestMsg(pieceIndex uint32, beginOffset uint32, blockLe
 		return fmt.Errorf("failed to write to connection: %w", err)
 	}
 
-	logrus.Debugf("'%s' message sent to peer %s", msg.ID.String(), p.peer.String())
+	logger.LogSentMessage("'%s' message sent to peer %s", msg.ID.String(), p.peer.String())
 
 	return nil
 }

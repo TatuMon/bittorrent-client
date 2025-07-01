@@ -12,21 +12,22 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/TatuMon/bittorrent-client/logger"
 	"github.com/TatuMon/bittorrent-client/src/torrents"
-	"github.com/sirupsen/logrus"
 )
 
 
 func main() {
-	showDebugLogs := flag.Bool("debug", false, "show debug logs")
+	loggerLevel := flag.String("log-level", "error", "can be 'debug', 'warning', 'error' or 'none'")
+	logSentMsgs := flag.Bool("sent-msg", false, "if debug is enabled, logs sent messages")
+	logRecvMsgs := flag.Bool("recv-msg", false, "if debug is enabled, logs received messages")
 	torrentPath := flag.String("torrent", "", "specify the location of the .torrent file")
 	showTorrentPreview := flag.Bool("preview", false, "prints the information about the .torrent, without downloading anything")
 	flag.Parse()
 
-	if *showDebugLogs {
-		logrus.SetLevel(logrus.DebugLevel)
-	} else {
-		logrus.SetLevel(logrus.ErrorLevel)
+	if err := logger.SetupLoggerOpts(*loggerLevel, *logSentMsgs, *logRecvMsgs); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to setup logger: %s\n", err.Error())
+		os.Exit(1)
 	}
 
 	if torrentPath == nil || *torrentPath == "" {
