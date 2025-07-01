@@ -52,5 +52,8 @@ func main() {
 		return
 	}
 
-	torrents.StartDownload(torr)
+	if err := torrents.StartDownload(torr); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to download torrent: %s\n", err.Error())
+		os.Exit(1)
+	}
 }
