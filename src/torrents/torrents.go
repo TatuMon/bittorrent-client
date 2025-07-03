@@ -39,16 +39,18 @@ type Torrent struct {
 	PieceSize    uint
 	PiecesHashes []Sha1Checksum
 	InfoHash     Sha1Checksum
+	TotalPieces int
 }
 
 func (t *Torrent) calculatePieceSize(index uint) uint {
-	// As stated here: https://wiki.theory.org/BitTorrentSpecification#Notes  
-	// All pieces are of equal size, except for the last one
-	if index != uint(len(t.PiecesHashes)-1) {
-		return t.PieceSize
-	}
+	begin, end := t.calculateBoundsForPiece(int(index))
+	return uint(end - begin)
+}
 
-	return t.FileSize % uint(len(t.PiecesHashes))
+func (t *Torrent) calculateBoundsForPiece(index int) (begin int, end int) {
+	begin = index * int(t.PieceSize)
+	end = min(begin + int(t.PieceSize), int(t.FileSize))
+	return begin, end
 }
 
 func (t *Torrent) JsonPreviewIndented() (string, error) {
@@ -129,6 +131,8 @@ func getTorrentFile(torrentFile *os.File) (*Torrent, error) {
 		fmt.Fprintf(os.Stderr, "failed to parse torrent information: %s\n", err.Error())
 		os.Exit(1)
 	}
+
+	torrent.TotalPieces = len(torrent.PiecesHashes)
 
 	return torrent, nil
 }
