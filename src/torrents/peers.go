@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -179,6 +180,7 @@ func (p *PeerConn) read() (*Message, error) {
 
 	if msg == nil {
 		logger.LogRecvMessage("received message of type 'keep alive' from %s", p.peer.String())
+		return nil, nil
 	} else {
 		logger.LogRecvMessage("received message of type '%s' from %s", msg.ID.String(), p.peer.String())
 	}
@@ -252,7 +254,7 @@ func (p *PeerConn) sendRequestMsg(pieceIndex uint32, beginOffset uint32, blockLe
 }
 
 func connectToPeer(torr *Torrent, peer Peer) (*PeerConn, error) {
-	conn, err := net.DialTimeout("tcp", peer.String(), 60*time.Second)
+	conn, err := net.DialTimeout("tcp", peer.String(), 30*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make TCP connection: %w", err)
 	}
@@ -303,17 +305,39 @@ If workCtx is done, the channel is not yet closed, but no more peers are added t
 */
 func connectPeersAsync(torr *Torrent, peers []Peer, workCtx context.Context) chan *PeerConn {
 	channel := make(chan *PeerConn, len(peers))
-	select {
-	case <-workCtx.Done():
-		return channel
-	default:
-	}
-
 	peersConnectedTotal := atomic.Uint64{}
+	connsAttempts := atomic.Uint64{}
+	totalPeers := len(peers)
+
+	peersConnsWorkCtx, peersConnsWorkCtxCancel := context.WithCancel(workCtx)
+
+	// Channel cleanup
+	go func() {
+		closing := sync.OnceFunc(func() { close(channel) })
+
+		// "channel" should be closed here when either workCtx is done or all peers are processed
+		select {
+		case <-workCtx.Done():
+			peersConnsWorkCtxCancel()
+			closing()
+			return
+		case <-peersConnsWorkCtx.Done():
+			closing()
+			logrus.Debug("connected to all available peers")
+			return
+		}
+	}()
 
 	for _, p := range peers {
 		peer := p
 		go func() {
+			defer func() {
+				connsAttempts.Add(1)
+				if connsAttempts.Load() == uint64(totalPeers) {
+					peersConnsWorkCtxCancel()
+				}
+			}()
+
 			pConn, err := connectToPeer(torr, peer)
 			if err != nil {
 				logrus.Warnf("failed to connect to peer %s: %s", peer.String(), err.Error())
@@ -323,13 +347,15 @@ func connectPeersAsync(torr *Torrent, peers []Peer, workCtx context.Context) cha
 			select {
 			case <-workCtx.Done():
 				return
-			default:
+			case channel <- pConn:
+				peersConnectedTotal.Add(1)
+				logrus.Debugf("%d/%d peers connected", peersConnectedTotal.Load(), totalPeers)
 			}
-
-			channel <- pConn
-			peersConnectedTotal.Add(1)
-			logrus.Debugf("%d/%d peers connected", peersConnectedTotal.Load(), len(peers))
 		}()
+	}
+
+	if totalPeers == 0 {
+		peersConnsWorkCtxCancel()
 	}
 
 	return channel
