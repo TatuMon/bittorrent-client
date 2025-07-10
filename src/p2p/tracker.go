@@ -1,4 +1,4 @@
-package torrents
+package p2p
 
 import (
 	"errors"
@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/TatuMon/bittorrent-client/src/torrent"
 	"github.com/jackpal/bencode-go"
 )
 
@@ -38,7 +39,7 @@ func getTrackerPort() uint {
 	return 6881
 }
 
-func getTrackerURL(torr *Torrent) (string, error) {
+func getTrackerURL(torr *torrent.Torrent) (string, error) {
 	baseURL, err := url.Parse(torr.Announce)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate URL: %w", err)
@@ -58,7 +59,7 @@ func getTrackerURL(torr *Torrent) (string, error) {
 	return baseURL.String(), nil
 }
 
-func announce(torr *Torrent) ([]Peer, error) {
+func Announce(torr *torrent.Torrent) ([]Peer, error) {
 	trackerUrl, err := getTrackerURL(torr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tracker url: %w", err)

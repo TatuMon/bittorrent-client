@@ -1,4 +1,4 @@
-package torrents
+package p2p
 
 import (
 	"bytes"

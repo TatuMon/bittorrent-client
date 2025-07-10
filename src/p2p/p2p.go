@@ -1,4 +1,4 @@
-package torrents
+package p2p
 
 import (
 	"bytes"
@@ -15,14 +15,14 @@ import (
 	"time"
 
 	"github.com/TatuMon/bittorrent-client/logger"
+	"github.com/TatuMon/bittorrent-client/src/torrent"
 	"github.com/sirupsen/logrus"
 )
 
 const handshakeLen = 68
-const maxReqBacklog = 5
+const MaxReqBacklog = 5
 
 /*
-*
 The user is also a peer. This is his ID
 
 It gets generated only once when calling getClientPeerID
@@ -30,7 +30,6 @@ It gets generated only once when calling getClientPeerID
 var clientPeerID string
 
 /*
-*
 This function MUST only be called by getClientPeerID
 */
 func genClientPeerID() {
@@ -66,7 +65,6 @@ func (p *Peer) PrintJson() {
 }
 
 /*
-*
 The peers are defined by 6-byte strings, where the first 4 define the IP and the last 2 the port.
 Both using network byte order (big-endian)
 */
@@ -101,8 +99,8 @@ func PrintPeersJson(peers []Peer) {
 
 type Handshake struct {
 	Pstr     string
-	InfoHash Sha1Checksum
-	PeerID   Sha1Checksum
+	InfoHash torrent.Sha1Checksum
+	PeerID   torrent.Sha1Checksum
 }
 
 /*
@@ -122,11 +120,11 @@ func (h *Handshake) Serialize() []byte {
 	return buf.Bytes()
 }
 
-func HandshakeFromTorrent(torr *Torrent) Handshake {
+func HandshakeFromTorrent(torr *torrent.Torrent) Handshake {
 	return Handshake{
 		Pstr:     "BitTorrent protocol",
 		InfoHash: torr.InfoHash,
-		PeerID:   Sha1Checksum([]byte(getClientPeerID())),
+		PeerID:   torrent.Sha1Checksum([]byte(getClientPeerID())),
 	}
 }
 
@@ -158,8 +156,8 @@ func HandshakeFromStream(r []byte) (*Handshake, error) {
 
 	return &Handshake{
 		Pstr:     string(pstrbuf),
-		InfoHash: Sha1Checksum(infoHashBuf),
-		PeerID:   Sha1Checksum(peerIDBuf),
+		InfoHash: torrent.Sha1Checksum(infoHashBuf),
+		PeerID:   torrent.Sha1Checksum(peerIDBuf),
 	}, nil
 }
 
@@ -168,11 +166,31 @@ type PeerConn struct {
 	conn       net.Conn
 	unchoked   bool
 	interested bool
-	reqBacklog int
+	ReqBacklog int
 	bitfield   *Bitfield
 }
 
-func (p *PeerConn) read() (*Message, error) {
+func (p *PeerConn) GetPeer() Peer {
+	return p.peer
+}
+
+func (p *PeerConn) IsUnchoked() bool {
+	return p.unchoked
+}
+
+func (p *PeerConn) IsInterested() bool {
+	return p.interested
+}
+
+func (p *PeerConn) GetBitfield() *Bitfield {
+	return p.bitfield
+}
+
+func (p *PeerConn) CloseConn() error {
+	return p.conn.Close()
+}
+
+func (p *PeerConn) Read() (*Message, error) {
 	p.conn.SetDeadline(time.Now().Add(time.Second * 60))
 	defer p.conn.SetDeadline(time.Time{})
 
@@ -205,7 +223,7 @@ func (p *PeerConn) read() (*Message, error) {
 	return msg, nil
 }
 
-func (p *PeerConn) sendInterestedMsg() error {
+func (p *PeerConn) SendInterestedMsg() error {
 	msg := Message{
 		ID: MsgInterested,
 	}
@@ -220,7 +238,7 @@ func (p *PeerConn) sendInterestedMsg() error {
 	return nil
 }
 
-func (p *PeerConn) sendUnchoke() error {
+func (p *PeerConn) SendUnchoke() error {
 	msg := Message{
 		ID: MsgUnchoke,
 	}
@@ -235,7 +253,7 @@ func (p *PeerConn) sendUnchoke() error {
 	return nil
 }
 
-func (p *PeerConn) sendRequestMsg(pieceIndex uint32, beginOffset uint32, blockLen uint32) error {
+func (p *PeerConn) SendRequestMsg(pieceIndex uint32, beginOffset uint32, blockLen uint32) error {
 	payloadBuf := make([]byte, 12)
 	binary.BigEndian.PutUint32(payloadBuf[0:4], pieceIndex)
 	binary.BigEndian.PutUint32(payloadBuf[4:8], beginOffset)
@@ -256,7 +274,7 @@ func (p *PeerConn) sendRequestMsg(pieceIndex uint32, beginOffset uint32, blockLe
 	return nil
 }
 
-func (p *PeerConn) sendKeepAlive() error {
+func (p *PeerConn) SendKeepAlive() error {
 	if _, err := p.conn.Write(nil); err != nil {
 		return fmt.Errorf("failed to write to connection: %w", err)
 	}
@@ -266,7 +284,7 @@ func (p *PeerConn) sendKeepAlive() error {
 	return nil
 }
 
-func connectToPeer(torr *Torrent, peer Peer) (*PeerConn, error) {
+func connectToPeer(torr *torrent.Torrent, peer Peer) (*PeerConn, error) {
 	conn, err := net.DialTimeout("tcp", peer.String(), 30*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make TCP connection: %w", err)
@@ -304,7 +322,7 @@ func connectToPeer(torr *Torrent, peer Peer) (*PeerConn, error) {
 	}
 
 	for !pc.unchoked {
-		_, err := pc.read()
+		_, err := pc.Read()
 		if err != nil {
 			return nil, fmt.Errorf("failed to wait for bitfield: %w", err)
 		}
@@ -316,7 +334,7 @@ func connectToPeer(torr *Torrent, peer Peer) (*PeerConn, error) {
 /*
 If workCtx is done, the channel is not yet closed, but no more peers are added to it from this function.
 */
-func connectPeersAsync(torr *Torrent, peers []Peer, workCtx context.Context) chan *PeerConn {
+func ConnectPeersAsync(torr *torrent.Torrent, peers []Peer, workCtx context.Context) chan *PeerConn {
 	channel := make(chan *PeerConn, len(peers))
 	peersConnectedTotal := atomic.Uint64{}
 	connsAttempts := atomic.Uint64{}

@@ -1,8 +1,7 @@
-package torrents
+package torrent
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
@@ -41,12 +40,12 @@ type Torrent struct {
 	TotalPieces  int
 }
 
-func (t *Torrent) calculatePieceSize(index uint) uint {
-	begin, end := t.calculateBoundsForPiece(int(index))
+func (t *Torrent) CalculatePieceSize(index uint) uint {
+	begin, end := t.CalculateBoundsForPiece(int(index))
 	return uint(end - begin)
 }
 
-func (t *Torrent) calculateBoundsForPiece(index int) (begin int, end int) {
+func (t *Torrent) CalculateBoundsForPiece(index int) (begin int, end int) {
 	begin = index * int(t.PieceSize)
 	end = min(begin+int(t.PieceSize), int(t.FileSize))
 	return begin, end
@@ -133,59 +132,4 @@ func getTorrentFile(torrentFile *os.File) (*Torrent, error) {
 	torrent.TotalPieces = len(torrent.PiecesHashes)
 
 	return torrent, nil
-}
-
-func writeToFileAsync(filename string, pieces chan *PieceProgress, workCtx context.Context) chan error {
-	errChan := make(chan error, 1)
-
-	file, err := os.Create(filename)
-	if err != nil {
-		errChan <- fmt.Errorf("failed to create output file: %w", err)
-		close(errChan)
-		return errChan
-	}
-
-	go func() {
-		for p := range pieces {
-			select {
-			case <-workCtx.Done():
-				return
-			default:
-			}
-
-			_, err := file.WriteAt(p.buf, int64(p.index*int(p.size)))
-			if err != nil {
-				errChan <- fmt.Errorf("failed to write to file: %w", err)
-				return
-			}
-		}
-		errChan <- fmt.Errorf("download completed")
-		close(errChan)
-	}()
-
-	return errChan
-}
-
-func StartDownload(torr *Torrent, outFile string) error {
-	peers, err := announce(torr)
-	if err != nil {
-		return fmt.Errorf("failed to announce to tracker: %w\n", err)
-	}
-
-	workCtx, workCtxCancel := context.WithCancelCause(context.Background())
-
-	peersConns := connectPeersAsync(torr, peers, workCtx)
-	donePieces := startPiecesDownload(torr, peersConns, workCtx)
-	writeErrChan := writeToFileAsync(outFile, donePieces, workCtx)
-
-	select {
-	case <-workCtx.Done():
-		fmt.Printf("download ended. cause: %s", context.Cause(workCtx).Error())
-		workCtxCancel(nil) // line to satisfy `go vet`
-	case writeErr := <-writeErrChan:
-		workCtxCancel(writeErr)
-		fmt.Println(writeErr.Error())
-	}
-
-	return nil
 }

@@ -13,7 +13,8 @@ import (
 	"os"
 
 	"github.com/TatuMon/bittorrent-client/logger"
-	"github.com/TatuMon/bittorrent-client/src/torrents"
+	"github.com/TatuMon/bittorrent-client/src/pieces"
+	"github.com/TatuMon/bittorrent-client/src/torrent"
 )
 
 type ArgsAndOptions struct {
@@ -68,7 +69,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	torr, err := torrents.TorrentFromFile(argsAndOptions.TorrentFile)
+	torr, err := torrent.TorrentFromFile(argsAndOptions.TorrentFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to get torrent info: %s\n", err.Error())
 		os.Exit(1)
@@ -90,7 +91,7 @@ func main() {
 		of = argsAndOptions.OutputFile
 	}
 
-	if err := torrents.StartDownload(torr, of); err != nil {
+	if err := pieces.StartDownload(torr, of); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to download: %s\n", err.Error())
 		os.Exit(1)
 	}

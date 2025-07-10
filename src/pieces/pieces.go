@@ -1,4 +1,4 @@
-package torrents
+package pieces
 
 import (
 	"bytes"
@@ -7,9 +7,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 
+	"github.com/TatuMon/bittorrent-client/src/p2p"
+	"github.com/TatuMon/bittorrent-client/src/torrent"
 	"github.com/sirupsen/logrus"
 )
 
@@ -23,8 +26,8 @@ type PieceBlock struct {
 	Data  []byte
 }
 
-func PieceBlockFromMessage(msg *Message) (*PieceBlock, error) {
-	if msg.ID != MsgPiece {
+func PieceBlockFromMessage(msg *p2p.Message) (*PieceBlock, error) {
+	if msg.ID != p2p.MsgPiece {
 		return nil, fmt.Errorf("wrong message given: must be of type 'piece' but '%s' given", msg.ID.String())
 	}
 
@@ -46,13 +49,13 @@ type PieceProgress struct {
 	index        int
 	size         uint
 	buf          []byte
-	expectedHash Sha1Checksum
+	expectedHash torrent.Sha1Checksum
 	completed    bool
 	requested    uint
 	downloaded   uint
 }
 
-func newPieceProgress(index int, expectedHash Sha1Checksum, pieceSize uint) *PieceProgress {
+func newPieceProgress(index int, expectedHash torrent.Sha1Checksum, pieceSize uint) *PieceProgress {
 	return &PieceProgress{
 		index:        index,
 		size:         pieceSize,
@@ -87,38 +90,38 @@ func (p *PieceProgress) reset() {
 	p.requested = 0
 }
 
-func genPiecesProgresses(torr *Torrent) chan *PieceProgress {
+func genPiecesProgresses(torr *torrent.Torrent) chan *PieceProgress {
 	channel := make(chan *PieceProgress, len(torr.PiecesHashes))
 
 	for i, hash := range torr.PiecesHashes {
-		pp := newPieceProgress(i, hash, torr.calculatePieceSize(uint(i)))
+		pp := newPieceProgress(i, hash, torr.CalculatePieceSize(uint(i)))
 		channel <- pp
 	}
 
 	return channel
 }
 
-func attemptPieceDownload(peer *PeerConn, piece *PieceProgress) error {
+func attemptPieceDownload(peer *p2p.PeerConn, piece *PieceProgress) error {
 	for piece.downloaded < piece.size {
-		if peer.unchoked {
-			for peer.reqBacklog < maxReqBacklog && piece.requested < piece.size {
+		if peer.IsUnchoked() {
+			for peer.ReqBacklog < p2p.MaxReqBacklog && piece.requested < piece.size {
 				blockSize := piece.calcNextBlockSize()
-				err := peer.sendRequestMsg(uint32(piece.index), uint32(piece.requested), uint32(blockSize))
+				err := peer.SendRequestMsg(uint32(piece.index), uint32(piece.requested), uint32(blockSize))
 				if err != nil {
 					return fmt.Errorf("failed to request piece %d: %w", piece.index, err)
 				}
 
-				peer.reqBacklog++
+				peer.ReqBacklog++
 				piece.requested += blockSize
 			}
 		}
 
-		msg, err := peer.read()
+		msg, err := peer.Read()
 		if err != nil {
 			return fmt.Errorf("failed to read from peer: %w", err)
 		}
 
-		if msg != nil && msg.ID == MsgPiece {
+		if msg != nil && msg.ID == p2p.MsgPiece {
 			block, err := PieceBlockFromMessage(msg)
 
 			if err != nil {
@@ -139,7 +142,7 @@ func attemptPieceDownload(peer *PeerConn, piece *PieceProgress) error {
 
 			copy(piece.buf[block.Begin:], block.Data)
 
-			peer.reqBacklog--
+			peer.ReqBacklog--
 			piece.downloaded += uint(len(block.Data))
 		}
 	}
@@ -147,7 +150,7 @@ func attemptPieceDownload(peer *PeerConn, piece *PieceProgress) error {
 	return nil
 }
 
-func startPiecesDownload(torr *Torrent, peersChan chan *PeerConn, workCtx context.Context) chan *PieceProgress {
+func startPiecesDownload(torr *torrent.Torrent, peersChan chan *p2p.PeerConn, workCtx context.Context) chan *PieceProgress {
 	piecesChan := genPiecesProgresses(torr)
 	donePieces := make(chan *PieceProgress, torr.TotalPieces)
 	donePiecesTotal := atomic.Uint64{}
@@ -164,15 +167,17 @@ func startPiecesDownload(torr *Torrent, peersChan chan *PeerConn, workCtx contex
 
 	go func() {
 		for p := range peersChan {
-			peer := p
+			peerConn := p
 			go func() {
-				if err := peer.sendUnchoke(); err != nil {
-					logrus.Warnf("peer %s couldn't get unchoked: %s", peer.peer.String(), err.Error())
+				peer := peerConn.GetPeer()
+
+				if err := peerConn.SendUnchoke(); err != nil {
+					logrus.Warnf("peer %s couldn't get unchoked: %s", peer.String(), err.Error())
 					return
 				}
 
-				if err := peer.sendInterestedMsg(); err != nil {
-					logrus.Warnf("peer %s couldn't send 'interested': %s", peer.peer.String(), err.Error())
+				if err := peerConn.SendInterestedMsg(); err != nil {
+					logrus.Warnf("peer %s couldn't send 'interested': %s", peer.String(), err.Error())
 					return
 				}
 
@@ -185,14 +190,15 @@ func startPiecesDownload(torr *Torrent, peersChan chan *PeerConn, workCtx contex
 							return
 						}
 
-						if peer.bitfield == nil || !peer.bitfield.HasPiece(pieceProgress.index) {
+						bitfield := peerConn.GetBitfield()
+						if bitfield == nil || !bitfield.HasPiece(pieceProgress.index) {
 							piecesChan <- pieceProgress
 							continue
 						}
 
-						if err := attemptPieceDownload(peer, pieceProgress); err != nil {
-							logrus.Warnf("peer %s couldn't download piece %d: %s. closing connection", peer.peer.String(), pieceProgress.index, err.Error())
-							peer.conn.Close()
+						if err := attemptPieceDownload(peerConn, pieceProgress); err != nil {
+							logrus.Warnf("peer %s couldn't download piece %d: %s. closing connection", peer.String(), pieceProgress.index, err.Error())
+							peerConn.CloseConn()
 							piecesChan <- pieceProgress
 							return
 						}
@@ -215,12 +221,12 @@ func startPiecesDownload(torr *Torrent, peersChan chan *PeerConn, workCtx contex
 							return
 						}
 					case <-keepAliveTicker:
-						if err := peer.sendKeepAlive(); err != nil {
-							logrus.Warnf("couldn't send 'keep alive' to peer %s: %s. closing connection", err.Error(), peer.peer.String())
+						if err := peerConn.SendKeepAlive(); err != nil {
+							logrus.Warnf("couldn't send 'keep alive' to peer %s: %s. closing connection", err.Error(), peer.String())
 							return
 						}
 					case <-downloadCtx.Done():
-						peer.conn.Close()
+						peerConn.CloseConn()
 					}
 				}
 			}()
@@ -228,4 +234,59 @@ func startPiecesDownload(torr *Torrent, peersChan chan *PeerConn, workCtx contex
 	}()
 
 	return donePieces
+}
+
+func writePiecesToFileAsync(filename string, pieces chan *PieceProgress, workctx context.Context) chan error {
+	errchan := make(chan error, 1)
+
+	file, err := os.Create(filename)
+	if err != nil {
+		errchan <- fmt.Errorf("failed to create output file: %w", err)
+		close(errchan)
+		return errchan
+	}
+
+	go func() {
+		for p := range pieces {
+			select {
+			case <-workctx.Done():
+				return
+			default:
+			}
+
+			_, err := file.WriteAt(p.buf, int64(p.index*int(p.size)))
+			if err != nil {
+				errchan <- fmt.Errorf("failed to write to file: %w", err)
+				return
+			}
+		}
+		errchan <- fmt.Errorf("download completed")
+		close(errchan)
+	}()
+
+	return errchan
+}
+
+func StartDownload(torr *torrent.Torrent, outFile string) error {
+	peers, err := p2p.Announce(torr)
+	if err != nil {
+		return fmt.Errorf("failed to announce to tracker: %w\n", err)
+	}
+
+	workCtx, workCtxCancel := context.WithCancelCause(context.Background())
+
+	peersConns := p2p.ConnectPeersAsync(torr, peers, workCtx)
+	donePieces := startPiecesDownload(torr, peersConns, workCtx)
+	writeErrChan := writePiecesToFileAsync(outFile, donePieces, workCtx)
+
+	select {
+	case <-workCtx.Done():
+		fmt.Printf("download ended. cause: %s", context.Cause(workCtx).Error())
+		workCtxCancel(nil) // line to satisfy `go vet`
+	case writeErr := <-writeErrChan:
+		workCtxCancel(writeErr)
+		fmt.Println(writeErr.Error())
+	}
+
+	return nil
 }
