@@ -9,7 +9,6 @@ import (
 	"os"
 
 	bencode "github.com/jackpal/bencode-go"
-	"github.com/sirupsen/logrus"
 )
 
 type Sha1Checksum [20]byte
@@ -39,7 +38,7 @@ type Torrent struct {
 	PieceSize    uint
 	PiecesHashes []Sha1Checksum
 	InfoHash     Sha1Checksum
-	TotalPieces int
+	TotalPieces  int
 }
 
 func (t *Torrent) calculatePieceSize(index uint) uint {
@@ -49,7 +48,7 @@ func (t *Torrent) calculatePieceSize(index uint) uint {
 
 func (t *Torrent) calculateBoundsForPiece(index int) (begin int, end int) {
 	begin = index * int(t.PieceSize)
-	end = min(begin + int(t.PieceSize), int(t.FileSize))
+	end = min(begin+int(t.PieceSize), int(t.FileSize))
 	return begin, end
 }
 
@@ -62,7 +61,6 @@ func (t *Torrent) JsonPreviewIndented() (string, error) {
 
 	return string(j), nil
 }
-
 
 func TorrentFromFile(torrentPath string) (*Torrent, error) {
 	torrentFile, err := os.Open(torrentPath)
@@ -92,7 +90,7 @@ func torrentFromBencode(t bencodeTorrent) (*Torrent, error) {
 	concatedHashes := []byte(t.Info.Pieces)
 	chunks := len(concatedHashes) / 20
 
-	if len(concatedHashes) % 20 != 0 {
+	if len(concatedHashes)%20 != 0 {
 		return nil, fmt.Errorf("received malformed pieces hashes")
 	}
 
@@ -137,25 +135,57 @@ func getTorrentFile(torrentFile *os.File) (*Torrent, error) {
 	return torrent, nil
 }
 
-func StartDownload(torr *Torrent) error {
+func writeToFileAsync(filename string, pieces chan *PieceProgress, workCtx context.Context) chan error {
+	errChan := make(chan error, 1)
+
+	file, err := os.Create(filename)
+	if err != nil {
+		errChan <- fmt.Errorf("failed to create output file: %w", err)
+		close(errChan)
+		return errChan
+	}
+
+	go func() {
+		for p := range pieces {
+			select {
+			case <-workCtx.Done():
+				return
+			default:
+			}
+
+			_, err := file.WriteAt(p.buf, int64(p.index*int(p.size)))
+			if err != nil {
+				errChan <- fmt.Errorf("failed to write to file: %w", err)
+				return
+			}
+		}
+		errChan <- fmt.Errorf("download completed")
+		close(errChan)
+	}()
+
+	return errChan
+}
+
+func StartDownload(torr *Torrent, outFile string) error {
 	peers, err := announce(torr)
 	if err != nil {
 		return fmt.Errorf("failed to announce to tracker: %w\n", err)
 	}
 
-	workCtx, _ := context.WithCancelCause(context.Background())
+	workCtx, workCtxCancel := context.WithCancelCause(context.Background())
 
 	peersConns := connectPeersAsync(torr, peers, workCtx)
 	donePieces := startPiecesDownload(torr, peersConns, workCtx)
+	writeErrChan := writeToFileAsync(outFile, donePieces, workCtx)
 
-	for {
-		select {
-		case <-workCtx.Done():
-			close(peersConns)
-			fmt.Printf("download finished. cause: %s", context.Cause(workCtx).Error())
-			return nil
-		case p := <-donePieces:
-			logrus.Debugf("piece %d downloaded", p.index)
-		}
+	select {
+	case <-workCtx.Done():
+		fmt.Printf("download ended. cause: %s", context.Cause(workCtx).Error())
+		workCtxCancel(nil) // line to satisfy `go vet`
+	case writeErr := <-writeErrChan:
+		workCtxCancel(writeErr)
+		fmt.Println(writeErr.Error())
 	}
+
+	return nil
 }

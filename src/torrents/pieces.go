@@ -82,6 +82,11 @@ func (p *PieceProgress) ValidateHash() error {
 	return nil
 }
 
+func (p *PieceProgress) reset() {
+	p.downloaded = 0
+	p.requested = 0
+}
+
 func genPiecesProgresses(torr *Torrent) chan *PieceProgress {
 	channel := make(chan *PieceProgress, len(torr.PiecesHashes))
 
@@ -94,9 +99,6 @@ func genPiecesProgresses(torr *Torrent) chan *PieceProgress {
 }
 
 func attemptPieceDownload(peer *PeerConn, piece *PieceProgress) error {
-	peer.conn.SetDeadline(time.Now().Add(time.Second * 30))
-	defer peer.conn.SetDeadline(time.Time{})
-
 	for piece.downloaded < piece.size {
 		if peer.unchoked {
 			for peer.reqBacklog < maxReqBacklog && piece.requested < piece.size {
@@ -116,7 +118,7 @@ func attemptPieceDownload(peer *PeerConn, piece *PieceProgress) error {
 			return fmt.Errorf("failed to read from peer: %w", err)
 		}
 
-		if msg.ID == MsgPiece {
+		if msg != nil && msg.ID == MsgPiece {
 			block, err := PieceBlockFromMessage(msg)
 
 			if err != nil {
@@ -147,58 +149,83 @@ func attemptPieceDownload(peer *PeerConn, piece *PieceProgress) error {
 
 func startPiecesDownload(torr *Torrent, peersChan chan *PeerConn, workCtx context.Context) chan *PieceProgress {
 	piecesChan := genPiecesProgresses(torr)
-	donePieces := make(chan *PieceProgress, len(torr.PiecesHashes))
+	donePieces := make(chan *PieceProgress, torr.TotalPieces)
 	donePiecesTotal := atomic.Uint64{}
 
-	select {
-	case <-workCtx.Done():
+	downloadCtx, downloadCtxCancel := context.WithCancel(workCtx)
+	// Channel cleanup
+	go func() {
+		<-downloadCtx.Done()
 		close(piecesChan)
 		close(donePieces)
-		return donePieces
-	default:
-	}
+		logrus.Debug("all pieces downloaded")
+		return
+	}()
 
-	for p := range peersChan {
-		peer := p
-		go func() {
-			if err := peer.sendUnchoke(); err != nil {
-				logrus.Warnf("peer %s couldn't get unchoked: %s", peer.peer.String(), err.Error())
-				return
-			}
-
-			if err := peer.sendInterestedMsg(); err != nil {
-				logrus.Warnf("peer %s couldn't send 'interested': %s", peer.peer.String(), err.Error())
-				return
-			}
-
-			for pieceProgress := range piecesChan {
-				if peer.bitfield == nil || !peer.bitfield.HasPiece(pieceProgress.index) {
-					piecesChan <- pieceProgress
-					continue
+	go func() {
+		for p := range peersChan {
+			peer := p
+			go func() {
+				if err := peer.sendUnchoke(); err != nil {
+					logrus.Warnf("peer %s couldn't get unchoked: %s", peer.peer.String(), err.Error())
+					return
 				}
 
-				if err := attemptPieceDownload(peer, pieceProgress); err != nil {
-					logrus.Warnf("peer %s couldn't download piece %d: %s", peer.peer.String(), pieceProgress.index, err.Error())
-					piecesChan <- pieceProgress
-					continue
+				if err := peer.sendInterestedMsg(); err != nil {
+					logrus.Warnf("peer %s couldn't send 'interested': %s", peer.peer.String(), err.Error())
+					return
 				}
 
-				if err := pieceProgress.ValidateHash(); err != nil {
-					logrus.Warnf("piece %d invalid: %s. retrying", pieceProgress.index, err.Error())
-					pieceProgress.requested = 0
-					pieceProgress.downloaded = 0
-					piecesChan <- pieceProgress
-					continue
+				keepAliveTicker := time.Tick(60 * time.Second)
+
+				for {
+					select {
+					case pieceProgress := <-piecesChan:
+						if pieceProgress == nil {
+							return
+						}
+
+						if peer.bitfield == nil || !peer.bitfield.HasPiece(pieceProgress.index) {
+							piecesChan <- pieceProgress
+							continue
+						}
+
+						if err := attemptPieceDownload(peer, pieceProgress); err != nil {
+							logrus.Warnf("peer %s couldn't download piece %d: %s. closing connection", peer.peer.String(), pieceProgress.index, err.Error())
+							peer.conn.Close()
+							piecesChan <- pieceProgress
+							return
+						}
+
+						if err := pieceProgress.ValidateHash(); err != nil {
+							logrus.Warnf("piece %d invalid: %s. retrying", pieceProgress.index, err.Error())
+							pieceProgress.reset()
+							piecesChan <- pieceProgress
+							continue
+						}
+
+						donePieces <- pieceProgress
+						donePiecesTotal.Add(1)
+
+						percent := float64(donePiecesTotal.Load()) / float64(torr.TotalPieces) * 100
+						fmt.Printf("(%0.2f%%) Downloaded piece #%d\n", percent, pieceProgress.index)
+
+						if donePiecesTotal.Load() == uint64(torr.TotalPieces) {
+							downloadCtxCancel()
+							return
+						}
+					case <-keepAliveTicker:
+						if err := peer.sendKeepAlive(); err != nil {
+							logrus.Warnf("couldn't send 'keep alive' to peer %s: %s. closing connection", err.Error(), peer.peer.String())
+							return
+						}
+					case <-downloadCtx.Done():
+						peer.conn.Close()
+					}
 				}
-
-				donePieces <- pieceProgress
-				donePiecesTotal.Add(1)
-
-				percent := float64(donePiecesTotal.Load()) / float64(len(torr.PiecesHashes)) * 100
-				fmt.Printf("(%0.2f%%) Downloaded piece #%d\n", percent, pieceProgress.index)
-			}
-		}()
-	}
+			}()
+		}
+	}()
 
 	return donePieces
 }

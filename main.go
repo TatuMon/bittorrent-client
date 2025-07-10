@@ -23,6 +23,7 @@ func main() {
 	logRecvMsgs := flag.Bool("recv-msg", false, "if debug is enabled, logs received messages")
 	torrentPath := flag.String("torrent", "", "specify the location of the .torrent file")
 	showTorrentPreview := flag.Bool("preview", false, "prints the information about the .torrent, without downloading anything")
+	outFile := flag.String("output", "", "specify where to write the downloaded content. defaults to the name specified in the torrent file")
 	flag.Parse()
 
 	if err := logger.SetupLoggerOpts(*loggerLevel, *logSentMsgs, *logRecvMsgs); err != nil {
@@ -52,8 +53,13 @@ func main() {
 		return
 	}
 
-	if err := torrents.StartDownload(torr); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to download torrent: %s\n", err.Error())
+	of := torr.FileName
+	if *outFile != "" {
+		of = *outFile
+	}
+
+	if err := torrents.StartDownload(torr, of); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to download: %s\n", err.Error())
 		os.Exit(1)
 	}
 }

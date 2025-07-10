@@ -173,6 +173,9 @@ type PeerConn struct {
 }
 
 func (p *PeerConn) read() (*Message, error) {
+	p.conn.SetDeadline(time.Now().Add(time.Second * 60))
+	defer p.conn.SetDeadline(time.Time{})
+
 	msg, err := MessageFromStream(p.conn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read from connection: %w", err)
@@ -249,6 +252,16 @@ func (p *PeerConn) sendRequestMsg(pieceIndex uint32, beginOffset uint32, blockLe
 	}
 
 	logger.LogSentMessage("'%s' message sent to peer %s", msg.ID.String(), p.peer.String())
+
+	return nil
+}
+
+func (p *PeerConn) sendKeepAlive() error {
+	if _, err := p.conn.Write(nil); err != nil {
+		return fmt.Errorf("failed to write to connection: %w", err)
+	}
+
+	logger.LogSentMessage("'keep alive' message sent to peer %s", p.peer.String())
 
 	return nil
 }
