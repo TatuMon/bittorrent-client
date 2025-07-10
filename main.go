@@ -16,33 +16,65 @@ import (
 	"github.com/TatuMon/bittorrent-client/src/torrents"
 )
 
+type ArgsAndOptions struct {
+	LoggerLevel string
+	LogSentMsgs bool
+	LogRecvMsgs bool
+	ShowPreview bool
+	OutputFile  string
+	TorrentFile string
+}
 
-func main() {
+func setupFlags() ArgsAndOptions {
 	loggerLevel := flag.String("log-level", "error", "can be 'debug', 'warning', 'error' or 'none'")
 	logSentMsgs := flag.Bool("sent-msg", false, "if debug is enabled, logs sent messages")
 	logRecvMsgs := flag.Bool("recv-msg", false, "if debug is enabled, logs received messages")
-	torrentPath := flag.String("torrent", "", "specify the location of the .torrent file")
 	showTorrentPreview := flag.Bool("preview", false, "prints the information about the .torrent, without downloading anything")
 	outFile := flag.String("output", "", "specify where to write the downloaded content. defaults to the name specified in the torrent file")
-	flag.Parse()
-
-	if err := logger.SetupLoggerOpts(*loggerLevel, *logSentMsgs, *logRecvMsgs); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to setup logger: %s\n", err.Error())
-		os.Exit(1)
+	
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS...] <TORRENT>\n\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "Options:")
+		flag.PrintDefaults()
 	}
 
-	if torrentPath == nil || *torrentPath == "" {
+	flag.Parse()
+
+	torrentPath := flag.Arg(0)
+
+	return ArgsAndOptions{
+		LoggerLevel: *loggerLevel,
+		LogSentMsgs: *logSentMsgs,
+		LogRecvMsgs: *logRecvMsgs,
+		ShowPreview: *showTorrentPreview,
+		OutputFile:  *outFile,
+		TorrentFile: torrentPath,
+	}
+}
+
+func main() {
+	argsAndOptions := setupFlags()
+	if argsAndOptions.TorrentFile == "" {
 		fmt.Fprintf(os.Stderr, "must provide torrent file\n")
 		os.Exit(1)
 	}
 
-	torr, err := torrents.TorrentFromFile(*torrentPath)
+	if err := logger.SetupLoggerOpts(
+		argsAndOptions.LoggerLevel,
+		argsAndOptions.LogSentMsgs,
+		argsAndOptions.LogRecvMsgs,
+	); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to setup logger: %s\n", err.Error())
+		os.Exit(1)
+	}
+
+	torr, err := torrents.TorrentFromFile(argsAndOptions.TorrentFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to get torrent info: %s\n", err.Error())
 		os.Exit(1)
 	}
 
-	if *showTorrentPreview {
+	if argsAndOptions.ShowPreview {
 		s, err := torr.JsonPreviewIndented()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to show torrent preview: %s\n", err.Error())
@@ -54,8 +86,8 @@ func main() {
 	}
 
 	of := torr.FileName
-	if *outFile != "" {
-		of = *outFile
+	if argsAndOptions.OutputFile != "" {
+		of = argsAndOptions.OutputFile
 	}
 
 	if err := torrents.StartDownload(torr, of); err != nil {
