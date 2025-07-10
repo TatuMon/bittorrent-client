@@ -1,7 +1,6 @@
 package p2p
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +20,7 @@ type trackerResponse struct {
 	TrackerID      string `bencode:"tracker id"`
 	Complete       uint   `bencode:"complete"`   // aka seeders
 	Incomplete     uint   `bencode:"incomplete"` // aka leechers
-	Peers          string `bencode:"peers"` // string of bytes
+	Peers          string `bencode:"peers"`      // string of bytes
 }
 
 func trackerResponseFromBody(body io.ReadCloser) (*trackerResponse, error) {
@@ -71,7 +70,7 @@ func Announce(torr *torrent.Torrent) ([]Peer, error) {
 	}
 
 	if res.StatusCode >= 300 {
-		return nil, errors.New(fmt.Sprintf("connection to tracker failed with status %d", res.StatusCode))
+		return nil, fmt.Errorf("connection to tracker failed with status %d", res.StatusCode)
 	}
 
 	trackerRes, err := trackerResponseFromBody(res.Body)
@@ -81,7 +80,7 @@ func Announce(torr *torrent.Torrent) ([]Peer, error) {
 	res.Body.Close()
 
 	if len(trackerRes.FailureReason) > 0 {
-		return nil, errors.New(fmt.Sprintf("tracker responded with failure: %s", trackerRes.FailureReason))
+		return nil, fmt.Errorf("tracker responded with failure: %s", trackerRes.FailureReason)
 	}
 
 	if len(trackerRes.WarningMessage) > 0 {

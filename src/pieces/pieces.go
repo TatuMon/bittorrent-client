@@ -162,7 +162,6 @@ func startPiecesDownload(torr *torrent.Torrent, peersChan chan *p2p.PeerConn, wo
 		close(piecesChan)
 		close(donePieces)
 		logrus.Debug("all pieces downloaded")
-		return
 	}()
 
 	go func() {
